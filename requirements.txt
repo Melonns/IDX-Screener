@@ -1,0 +1,9 @@
+yfinance
+pandas
+ta
+scikit-learn
+matplotlib
+python-dotenv
+jupyter
+lxml
+html5lib
