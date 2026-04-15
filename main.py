@@ -8,6 +8,7 @@ from pathlib import Path
 import joblib
 import pandas as pd
 import requests
+import yfinance as yf
 from flask import Flask, jsonify, request
 
 # Ensure src is importable
@@ -25,6 +26,9 @@ MODEL_URL = os.environ.get(
 FEATURE_FILE = os.environ.get(
     'FEATURE_FILE', 'models/selected_features_20260415_0856.json'
 )
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+
+TELEGRAM_API_URL = 'https://api.telegram.org'
 
 
 def get_google_drive_file_id(url: str) -> str | None:
@@ -103,10 +107,59 @@ with open(FEATURE_FILE, 'r', encoding='utf-8') as f:
 
 def prepare_data_from_csv_text(csv_text: str) -> pd.DataFrame:
     df = pd.read_csv(io.StringIO(csv_text), index_col=0, parse_dates=True)
+    return prepare_data_from_dataframe(df)
+
+
+def prepare_data_from_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = add_technical_indicators(df)
     df = create_momentum_label(df)
     df = df.dropna(subset=selected_features)
     return df
+
+
+def download_ticker_data(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
+    if df.empty:
+        raise ValueError(f'No data found for {ticker}')
+    if not all(col in df.columns for col in ['Open', 'High', 'Low', 'Close', 'Volume']):
+        raise ValueError(f'Incomplete OHLCV data for {ticker}')
+    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+
+def predict_from_dataframe(df: pd.DataFrame) -> dict:
+    df = prepare_data_from_dataframe(df)
+    if df.empty:
+        raise ValueError('Not enough historical rows to compute all required features.')
+    row = df.iloc[[-1]]
+    X = row[selected_features]
+    pred = int(model.predict(X)[0])
+    prob = model.predict_proba(X)[0].tolist()
+    return {
+        'prediction': pred,
+        'probability': prob,
+        'timestamp': str(row.index[-1]),
+    }
+
+
+def parse_tickers_from_text(text: str) -> list[str]:
+    tokens = re.findall(r'[A-Za-z0-9\.]+', text.upper())
+    tickers = []
+    for token in tokens:
+        token = token.strip()
+        if token.endswith('JK') and not token.endswith('.JK'):
+            token = token[:-2] + '.JK'
+        if token.endswith('.JK'):
+            tickers.append(token)
+    return list(dict.fromkeys(tickers))
+
+
+def send_telegram_message(chat_id: int, text: str) -> dict:
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured')
+    url = f'{TELEGRAM_API_URL}/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
+    resp = requests.post(url, json=payload, timeout=15)
+    return resp.json()
 
 
 @app.route('/')
@@ -116,6 +169,7 @@ def status():
         'model_file': MODEL_FILE,
         'model_url': MODEL_URL,
         'selected_features_count': len(selected_features),
+        'telegram_bot': bool(TELEGRAM_BOT_TOKEN),
     })
 
 
@@ -133,27 +187,75 @@ def predict():
             df = pd.read_csv(csv_url, index_col=0, parse_dates=True)
         else:
             df = prepare_data_from_csv_text(csv_text)
+        result = predict_from_dataframe(df)
     except Exception as err:
         return jsonify({'error': f'Failed to load data: {err}'}), 400
 
-    if df.empty:
-        return jsonify({'error': 'No valid rows available after feature engineering.'}), 400
-
-    df = df.dropna(subset=selected_features)
-    if df.empty:
-        return jsonify({'error': 'No rows with complete selected features.'}), 400
-
-    row = df.iloc[[-1]]
-    X = row[selected_features]
-    pred = int(model.predict(X)[0])
-    prob = model.predict_proba(X)[0].tolist()
-
     return jsonify({
-        'prediction': pred,
-        'probability': prob,
+        **result,
         'selected_features': selected_features,
-        'timestamp': str(row.index[-1]),
     })
+
+
+@app.route('/predict_tickers', methods=['POST'])
+def predict_tickers():
+    payload = request.get_json(force=True)
+    tickers = payload.get('tickers')
+
+    if not tickers or not isinstance(tickers, list):
+        return jsonify({'error': 'Provide tickers as a JSON list under key tickers.'}), 400
+
+    results = {}
+    for ticker in tickers:
+        try:
+            df = download_ticker_data(ticker)
+            result = predict_from_dataframe(df)
+            results[ticker] = {
+                'status': 'ok',
+                'prediction': result['prediction'],
+                'probability': result['probability'],
+                'timestamp': result['timestamp'],
+            }
+        except Exception as err:
+            results[ticker] = {'status': 'error', 'error': str(err)}
+
+    return jsonify(results)
+
+
+@app.route('/telegram_webhook', methods=['POST'])
+def telegram_webhook():
+    if not TELEGRAM_BOT_TOKEN:
+        return jsonify({'error': 'TELEGRAM_BOT_TOKEN is not configured'}), 500
+
+    data = request.get_json(force=True)
+    message = data.get('message') or data.get('edited_message')
+    if not message:
+        return jsonify({'ok': False, 'error': 'No message received'}), 200
+
+    chat_id = message['chat']['id']
+    text = message.get('text', '').strip()
+    if not text:
+        send_telegram_message(chat_id, 'Send stock tickers like: BBCA.JK TLKM.JK')
+        return jsonify({'ok': True})
+
+    tickers = parse_tickers_from_text(text)
+    if not tickers:
+        send_telegram_message(chat_id, 'No valid ticker found. Use symbols like BBCA.JK or TLKM.JK.')
+        return jsonify({'ok': True})
+
+    replies = []
+    for ticker in tickers:
+        try:
+            df = download_ticker_data(ticker)
+            result = predict_from_dataframe(df)
+            prob = result['probability'][1] if len(result['probability']) > 1 else result['probability'][0]
+            replies.append(f'*{ticker}*: Prediction={result["prediction"]}, Prob_1={prob:.2f}')
+        except Exception as err:
+            replies.append(f'*{ticker}*: error {err}')
+
+    message_text = '\n'.join(replies)
+    send_telegram_message(chat_id, message_text)
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':
