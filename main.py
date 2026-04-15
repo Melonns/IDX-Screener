@@ -202,6 +202,19 @@ def predict_from_dataframe(df: pd.DataFrame) -> dict:
 
 
 def parse_tickers_from_text(text: str) -> list[str]:
+    """Parse ticker symbols from user text.
+    
+    Supports formats:
+    - Space separated: "ASII BBCA TLKM"
+    - Comma separated: "ASII, BBCA, TLKM"
+    - With or without .JK: "ASII.JK BBCA"
+    - Mixed: "ASII, BBCA.JK TLKM"
+    
+    Returns deduplicated list of normalized tickers.
+    """
+    # Replace commas with spaces for consistency
+    text = text.replace(',', ' ')
+    
     tokens = re.findall(r'[A-Za-z0-9\.]+', text.upper())
     tickers = []
     for token in tokens:
@@ -210,7 +223,8 @@ def parse_tickers_from_text(text: str) -> list[str]:
             token = token[:-2] + '.JK'
         if token.endswith('.JK') or (len(token) == 4 and token.isalpha()):
             tickers.append(token)
-    return list(dict.fromkeys(tickers))
+    return list(dict.fromkeys(tickers))  # Remove duplicates while preserving order
+
 
 
 def send_telegram_message(chat_id: int, text: str) -> dict:
@@ -229,6 +243,72 @@ def send_chat_action(chat_id: int, action: str = 'typing') -> dict:
     payload = {'chat_id': chat_id, 'action': action}
     resp = requests.post(url, json=payload, timeout=15)
     return resp.json()
+
+
+def get_help_message() -> str:
+    """Return help message for Telegram bot."""
+    help_text = """🤖 *IDX Stock Momentum Screener Bot*
+
+*Cara Pakai:*
+Kirim kode saham IDX untuk mendapat prediksi momentum saham
+
+*Format Input:*
+• Spasi: `ASII BBCA TLKM`
+• Koma: `ASII, BBCA, TLKM`
+• Dengan .JK: `ASII.JK BBCA.JK`
+• Campuran: `ASII, BBCA.JK TLKM`
+
+*Contoh Penggunaan:*
+```
+ASII
+BBCA.JK TLKM
+ASII, ADMR, PGAS.JK
+```
+
+*Perintah:*
+/start - Mulai
+/help - Bantuan ini
+/example - Lihat contoh ticker populer
+
+*Output:*
+📈 Bullish - Prediksi harga naik ≥5% besok
+📉 Bearish - Prediksi harga turun atau naik <5%
+Confidence - Probabilitas prediksi benar
+
+*Ticker Populer IDX:*
+ASII, ADMR, PGAS, TLKM, BBNI, INDY, UNVR, SMGR, BMRI, JSMR
+"""
+    return help_text
+
+
+def handle_telegram_command(chat_id: int, command: str) -> bool:
+    """Handle Telegram commands. Returns True if command was handled."""
+    command = command.strip().lower()
+    
+    if command in ['/start', '/help']:
+        send_telegram_message(chat_id, get_help_message())
+        return True
+    
+    elif command == '/example':
+        example_text = """*Contoh Ticker Populer IDX:*
+
+📊 *Perbankan:* BBNI, BMRI, BBCA
+💪 *Industri:* ASII, ADMR, INDY
+⚡ *Utilitas:* PGAS, TLKM
+🏗️ *Properti:* ASRI, PPRO
+🏪 *Retail:* UNVR, AMRT
+
+*Coba kirim:*
+```
+ASII ADMR PGAS
+atau
+BBNI, BMRI, TLKM
+```
+"""
+        send_telegram_message(chat_id, example_text)
+        return True
+    
+    return False
 
 
 @app.route('/')
@@ -304,12 +384,21 @@ def telegram_webhook():
     chat_id = message['chat']['id']
     text = message.get('text', '').strip()
     if not text:
-        send_telegram_message(chat_id, 'Kirim kode saham IDX seperti: ASII.JK ADMR.JK atau tanpa .JK: ASII ADMR')
+        send_telegram_message(chat_id, get_help_message())
         return jsonify({'ok': True})
 
+    # Check if message is a command
+    if text.startswith('/'):
+        if handle_telegram_command(chat_id, text):
+            return jsonify({'ok': True})
+        else:
+            send_telegram_message(chat_id, f'Perintah tidak diketahui: {text}\n\nGunakan /help untuk bantuan.')
+            return jsonify({'ok': True})
+
+    # Parse tickers from text
     tickers = parse_tickers_from_text(text)
     if not tickers:
-        send_telegram_message(chat_id, 'Tidak ada ticker yang valid. Gunakan format seperti ASII.JK atau ADMR.JK')
+        send_telegram_message(chat_id, '❓ Tidak ada ticker yang valid.\n\nCoba: `ASII BBCA` atau `/help` untuk bantuan.')
         return jsonify({'ok': True})
 
     send_chat_action(chat_id, 'typing')
@@ -340,12 +429,13 @@ def telegram_webhook():
 
     # Build final message
     if success_count == 0:
-        message_text = '❌ Semua ticker tidak ditemukan.\nCoba dengan ticker populer: ASII.JK, ADMR.JK, PGAS.JK'
+        message_text = '❌ Semua ticker tidak ditemukan.\n\nCoba dengan ticker populer: ASII, ADMR, PGAS\natau gunakan /example untuk melihat contoh.'
     else:
         message_text = f'✅ Berhasil process {success_count}/{len(tickers)} ticker:\n\n' + '\n\n'.join(replies)
     
     send_telegram_message(chat_id, message_text)
     return jsonify({'ok': True})
+
 
 
 
