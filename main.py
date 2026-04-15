@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import joblib
@@ -117,18 +118,72 @@ def prepare_data_from_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def download_ticker_data(ticker: str, period: str = '1y', interval: str = '1d') -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
-    if df.empty:
-        raise ValueError(f'No data found for {ticker}')
+def download_ticker_data(ticker: str, period: str = '1y', interval: str = '1d', max_retries: int = 3) -> pd.DataFrame:
+    """
+    Download ticker data from yfinance with retry logic and better error handling.
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'ASII.JK')
+        period: Data period ('1d', '5d', '1mo', '3mo', '6mo', '1y')
+        interval: Interval ('1d', '1h', '1m')
+        max_retries: Number of retry attempts
+    
+    Returns:
+        DataFrame with OHLCV columns
+    
+    Raises:
+        ValueError: If no data found after retries
+    """
+    formats_to_try = [ticker]
+    
+    # If ticker ends with .JK, also try without it
+    if ticker.endswith('.JK'):
+        formats_to_try.append(ticker[:-3])
+    # If ticker doesn't end with .JK but is 4 chars, try with .JK
+    elif len(ticker) == 4 and ticker.isalpha():
+        formats_to_try.append(f'{ticker}.JK')
+    
+    last_error = None
+    
+    for attempt in range(max_retries):
+        for fmt in formats_to_try:
+            try:
+                # Add small delay between retries to avoid rate limiting
+                if attempt > 0:
+                    time.sleep(1 + attempt * 0.5)
+                
+                # Download with timeout
+                df = yf.download(fmt, period=period, interval=interval, progress=False, timeout=10)
+                
+                if df.empty:
+                    last_error = f"Empty DataFrame for {fmt}"
+                    continue
+                
+                # Handle MultiIndex columns (yfinance quirk for single tickers)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
+                
+                # Validate OHLCV columns exist
+                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                if not all(col in df.columns for col in required_cols):
+                    last_error = f"Incomplete OHLCV data for {fmt}"
+                    continue
+                
+                # Success!
+                return df[required_cols]
+                
+            except Exception as e:
+                last_error = str(e)
+                continue
+    
+    # All retries failed
+    raise ValueError(
+        f'Failed to download {ticker} after {max_retries} attempts '
+        f'(tried formats: {", ".join(formats_to_try)}). '
+        f'Last error: {last_error}'
+    )
 
-    # yfinance returns a MultiIndex DataFrame for single tickers in some versions.
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
 
-    if not all(col in df.columns for col in ['Open', 'High', 'Low', 'Close', 'Volume']):
-        raise ValueError(f'Incomplete OHLCV data for {ticker}')
-    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
 
 def predict_from_dataframe(df: pd.DataFrame) -> dict:
@@ -153,7 +208,7 @@ def parse_tickers_from_text(text: str) -> list[str]:
         token = token.strip()
         if token.endswith('JK') and not token.endswith('.JK'):
             token = token[:-2] + '.JK'
-        if token.endswith('.JK'):
+        if token.endswith('.JK') or (len(token) == 4 and token.isalpha()):
             tickers.append(token)
     return list(dict.fromkeys(tickers))
 
@@ -249,31 +304,50 @@ def telegram_webhook():
     chat_id = message['chat']['id']
     text = message.get('text', '').strip()
     if not text:
-        send_telegram_message(chat_id, 'Send stock tickers like: BBCA.JK TLKM.JK')
+        send_telegram_message(chat_id, 'Kirim kode saham IDX seperti: ASII.JK ADMR.JK atau tanpa .JK: ASII ADMR')
         return jsonify({'ok': True})
 
     tickers = parse_tickers_from_text(text)
     if not tickers:
-        send_telegram_message(chat_id, 'No valid ticker found. Use symbols like BBCA.JK or TLKM.JK.')
+        send_telegram_message(chat_id, 'Tidak ada ticker yang valid. Gunakan format seperti ASII.JK atau ADMR.JK')
         return jsonify({'ok': True})
 
     send_chat_action(chat_id, 'typing')
-    send_telegram_message(chat_id, 'Sedang memproses permintaan kamu... tunggu sebentar.')
+    send_telegram_message(chat_id, f'⏳ Sedang memproses {len(tickers)} ticker... tunggu sebentar ya.')
 
     replies = []
+    success_count = 0
+    
     for ticker in tickers:
         send_chat_action(chat_id, 'typing')
         try:
-            df = download_ticker_data(ticker)
+            df = download_ticker_data(ticker, period='1y')
             result = predict_from_dataframe(df)
             prob = result['probability'][1] if len(result['probability']) > 1 else result['probability'][0]
-            replies.append(f'*{ticker}*: Prediction={result["prediction"]}, Prob_1={prob:.2f}')
+            
+            # Format output
+            pred_text = "📈 Bullish" if result['prediction'] == 1 else "📉 Bearish"
+            replies.append(f'✅ *{ticker}*\n  {pred_text}, Confidence: {prob:.1%}')
+            success_count += 1
+            
+        except ValueError as err:
+            # Ticker not found or no data - user-friendly message
+            replies.append(f'❌ *{ticker}*: Data tidak tersedia (kemungkinan ticker delisted)')
         except Exception as err:
-            replies.append(f'*{ticker}*: error {err}')
+            # Other errors - still report but keep short
+            error_msg = str(err)[:40]
+            replies.append(f'❌ *{ticker}*: Error ({error_msg}...)')
 
-    message_text = '\n'.join(replies)
+    # Build final message
+    if success_count == 0:
+        message_text = '❌ Semua ticker tidak ditemukan.\nCoba dengan ticker populer: ASII.JK, ADMR.JK, PGAS.JK'
+    else:
+        message_text = f'✅ Berhasil process {success_count}/{len(tickers)} ticker:\n\n' + '\n\n'.join(replies)
+    
     send_telegram_message(chat_id, message_text)
     return jsonify({'ok': True})
+
+
 
 
 if __name__ == '__main__':
