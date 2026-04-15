@@ -15,10 +15,10 @@ A version 1 machine learning workflow for Indonesian Stock Exchange (IDX) moment
    ```bash
    git clone https://github.com/Melonns/IDX-Screener.git
    cd IDX-Screener
-```
+   ```
 
 2. Create and activate a Python virtual environment:
-   ```bash
+```bash
 python -m venv venv
 # Windows:
 venv\Scripts\activate
@@ -27,7 +27,7 @@ source venv/bin/activate
 ```
 
 3. Install dependencies:
-   ```bash
+```bash
    pip install -r requirements.txt
 ```
 
