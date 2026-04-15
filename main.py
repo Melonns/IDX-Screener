@@ -167,6 +167,15 @@ def send_telegram_message(chat_id: int, text: str) -> dict:
     return resp.json()
 
 
+def send_chat_action(chat_id: int, action: str = 'typing') -> dict:
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured')
+    url = f'{TELEGRAM_API_URL}/bot{TELEGRAM_BOT_TOKEN}/sendChatAction'
+    payload = {'chat_id': chat_id, 'action': action}
+    resp = requests.post(url, json=payload, timeout=15)
+    return resp.json()
+
+
 @app.route('/')
 def status():
     return jsonify({
@@ -248,8 +257,12 @@ def telegram_webhook():
         send_telegram_message(chat_id, 'No valid ticker found. Use symbols like BBCA.JK or TLKM.JK.')
         return jsonify({'ok': True})
 
+    send_chat_action(chat_id, 'typing')
+    send_telegram_message(chat_id, 'Sedang memproses permintaan kamu... tunggu sebentar.')
+
     replies = []
     for ticker in tickers:
+        send_chat_action(chat_id, 'typing')
         try:
             df = download_ticker_data(ticker)
             result = predict_from_dataframe(df)
