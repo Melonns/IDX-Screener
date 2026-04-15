@@ -8,11 +8,25 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
-def download_data(tickers=config.DEFAULT_TICKERS, period=config.DEFAULT_PERIOD, interval=config.DEFAULT_INTERVAL):
+def get_target_tickers():
+    """Membaca daftar saham hasil filter dari liquid_universe.txt jika ada."""
+    filepath = os.path.join(config.DATA_DIR, 'liquid_universe.txt')
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            tickers = [line.strip() for line in f if line.strip()]
+        if tickers:
+            return tickers
+    return config.DEFAULT_TICKERS
+
+def download_data(tickers=None, period="5y", interval=config.DEFAULT_INTERVAL):
     """
     Download historical data for a list of tickers.
+    If period is 5y, it downloads a massive dataset suitable for ML training.
     """
-    print(f"Downloading data for {len(tickers)} tickers...")
+    if tickers is None:
+        tickers = get_target_tickers()
+        
+    print(f"Mengunduh data sejarah panjang ({period}) untuk {len(tickers)} emiten...")
     
     # yfinance download works well with a space-separated string of tickers
     tickers_str = " ".join(tickers)
