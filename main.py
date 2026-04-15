@@ -121,6 +121,11 @@ def download_ticker_data(ticker: str, period: str = '1y', interval: str = '1d') 
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
         raise ValueError(f'No data found for {ticker}')
+
+    # yfinance returns a MultiIndex DataFrame for single tickers in some versions.
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+
     if not all(col in df.columns for col in ['Open', 'High', 'Low', 'Close', 'Volume']):
         raise ValueError(f'Incomplete OHLCV data for {ticker}')
     return df[['Open', 'High', 'Low', 'Close', 'Volume']]
