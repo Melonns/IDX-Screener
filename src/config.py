@@ -19,3 +19,7 @@ DEFAULT_TICKERS = [
 ]
 DEFAULT_PERIOD = '1y'
 DEFAULT_INTERVAL = '1d'
+
+# Feature selection configuration for training
+TOP_FEATURE_SELECTION = True
+TOP_FEATURE_COUNT = 8

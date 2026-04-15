@@ -1,4 +1,6 @@
+import io
 import pandas as pd
+import requests
 import yfinance as yf
 import os
 import sys
@@ -13,7 +15,14 @@ def get_all_idx_tickers():
     """
     print("Mencari daftar emiten IHSG dari Wikipedia...")
     url = "https://id.wikipedia.org/wiki/Daftar_perusahaan_yang_tercatat_di_Bursa_Efek_Indonesia"
-    tables = pd.read_html(url)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/126.0.0.0 Safari/537.36'
+    }
+    response = requests.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
+    tables = pd.read_html(io.StringIO(response.text))
     
     # The first table usually contains the main list of tickers
     df = tables[0]
@@ -29,12 +38,17 @@ def get_all_idx_tickers():
         # Fallback to first column assuming it's the ticker
         ticker_col = df.columns[0]
         
-    tickers = df[ticker_col].dropna().astype(str).tolist()
+    raw_tickers = df[ticker_col].dropna().astype(str).tolist()
+    tickers = []
+    for t in raw_tickers:
+        t = t.strip()
+        if t.upper().startswith('BEI:'):
+            t = t.split(':', 1)[1].strip()
+        if len(t) == 4 and t.isalpha():
+            tickers.append(f"{t}.JK")
     
-    # Filter 4-ltter valid tickers and append .JK
-    valid_tickers = [f"{t.strip()}.JK" for t in tickers if len(t.strip()) == 4 and t.strip().isalpha()]
-    print(f"Berhasil mengumpulkan {len(valid_tickers)} kode saham.")
-    return valid_tickers
+    print(f"Berhasil mengumpulkan {len(tickers)} kode saham.")
+    return tickers
 
 def filter_by_liquidity(tickers, min_turnover_idr=2_000_000_000, days=5):
     """

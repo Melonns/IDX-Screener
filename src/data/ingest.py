@@ -8,14 +8,32 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
+# Add data directory to path so we can import universe.py directly
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 def get_target_tickers():
-    """Membaca daftar saham hasil filter dari liquid_universe.txt jika ada."""
+    """Membaca daftar saham hasil filter dari liquid_universe.txt atau universe.py."""
     filepath = os.path.join(config.DATA_DIR, 'liquid_universe.txt')
     if os.path.exists(filepath):
         with open(filepath, 'r') as f:
             tickers = [line.strip() for line in f if line.strip()]
         if tickers:
             return tickers
+
+    try:
+        import universe
+        print("Mencari universe saham likuid dengan src/data/universe.py...")
+        all_tickers = universe.get_all_idx_tickers()
+        tickers = universe.filter_by_liquidity(all_tickers)
+        if tickers:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                for t in tickers:
+                    f.write(f"{t}\n")
+            return tickers
+    except Exception as e:
+        print(f"Gagal menggunakan universe.py: {e}")
+
+    print("Fallback ke daftar ticker default karena universe filter gagal.")
     return config.DEFAULT_TICKERS
 
 def download_data(tickers=None, period="5y", interval=config.DEFAULT_INTERVAL):

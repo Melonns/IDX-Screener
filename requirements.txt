@@ -4,6 +4,8 @@ ta
 scikit-learn
 matplotlib
 python-dotenv
+flask
+requests
 jupyter
 lxml
 html5lib
