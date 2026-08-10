@@ -86,6 +86,32 @@ CREATE TABLE IF NOT EXISTS contextual_indicators (
 CREATE INDEX IF NOT EXISTS idx_contextual_date   ON contextual_indicators(date);
 CREATE INDEX IF NOT EXISTS idx_contextual_ticker ON contextual_indicators(ticker);
 
+-- Corporate Actions (Phase 5)
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    ticker               TEXT NOT NULL,
+    date                 TEXT NOT NULL,
+    event_type           TEXT NOT NULL, -- DIVIDEND, SPLIT, BUYBACK, RIGHTS_ISSUE
+    value                REAL,          -- Nominal dividen atau rasio split
+    dividend_yield       REAL,          -- Dividend yield (% dari harga close saat itu)
+    PRIMARY KEY (ticker, date, event_type)
+);
+CREATE INDEX IF NOT EXISTS idx_corp_action_date   ON corporate_actions(date);
+CREATE INDEX IF NOT EXISTS idx_corp_action_ticker ON corporate_actions(ticker);
+
+-- Pengumuman Keterbukaan Informasi IDX (Phase 5)
+CREATE TABLE IF NOT EXISTS idx_announcements (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_id      TEXT UNIQUE,
+    date                 TEXT NOT NULL,
+    ticker               TEXT,
+    title                TEXT NOT NULL,
+    tags                 TEXT,
+    summary              TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_announcement_date   ON idx_announcements(date);
+CREATE INDEX IF NOT EXISTS idx_announcement_ticker ON idx_announcements(ticker);
+
 -- Output scoring engine per saham per hari
 CREATE TABLE IF NOT EXISTS signals (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -500,6 +526,85 @@ class DatabaseManager:
             FROM daily_prices p
             LEFT JOIN contextual_indicators c USING (ticker, date)
             LEFT JOIN market_index m ON p.date = m.date
+            WHERE {where}
+            ORDER BY p.date ASC
+        """
+        with self._connect() as conn:
+            df = pd.read_sql_query(query, conn, params=params, parse_dates=['date'])
+        if not df.empty:
+            df = df.set_index('date')
+        return df
+
+    # ─────────────────────────────────────────────────────────────
+    # CORPORATE ACTIONS & ANNOUNCEMENTS (PHASE 5)
+    # ─────────────────────────────────────────────────────────────
+
+    def save_corporate_actions(self, rows: list[tuple]) -> int:
+        """
+        rows format: [(ticker, date, event_type, value, dividend_yield), ...]
+        """
+        if not rows:
+            return 0
+        with self._connect() as conn:
+            # Recreate table without strict foreign key if needed
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS corporate_actions (
+                    ticker               TEXT NOT NULL,
+                    date                 TEXT NOT NULL,
+                    event_type           TEXT NOT NULL,
+                    value                REAL,
+                    dividend_yield       REAL,
+                    PRIMARY KEY (ticker, date, event_type)
+                );
+            """)
+            conn.executemany("""
+                INSERT OR REPLACE INTO corporate_actions 
+                (ticker, date, event_type, value, dividend_yield)
+                VALUES (?, ?, ?, ?, ?)
+            """, rows)
+            conn.execute("PRAGMA foreign_keys = ON;")
+        return len(rows)
+
+    def save_idx_announcements(self, rows: list[tuple]) -> int:
+        """
+        rows format: [(announcement_id, date, ticker, title, tags, summary), ...]
+        """
+        if not rows:
+            return 0
+        with self._connect() as conn:
+            conn.executemany("""
+                INSERT OR IGNORE INTO idx_announcements 
+                (announcement_id, date, ticker, title, tags, summary)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, rows)
+        return len(rows)
+
+    def get_prices_with_catalysts(self, ticker: str, start: str = None, end: str = None) -> pd.DataFrame:
+        """
+        JOIN daily_prices, contextual_indicators, market_index, and corporate_actions.
+        """
+        conditions = ["p.ticker = ?"]
+        params: list = [ticker]
+        if start:
+            conditions.append("p.date >= ?")
+            params.append(start)
+        if end:
+            conditions.append("p.date <= ?")
+            params.append(end)
+        conditions.append("p.is_valid = 1")
+        where = " AND ".join(conditions)
+        
+        query = f"""
+            SELECT 
+                p.date, p.open AS Open, p.high AS High, p.low AS Low, p.close AS Close, p.volume AS Volume,
+                c.rel_strength_5d, c.rel_strength_5d_rank, c.vol_accum_5d, c.vol_accum_5d_rank, c.turnover_5d,
+                m.ret_5d AS ihsg_ret_5d, m.slope_20d AS ihsg_slope_20d,
+                ca.event_type AS corp_event, ca.value AS corp_value, ca.dividend_yield
+            FROM daily_prices p
+            LEFT JOIN contextual_indicators c USING (ticker, date)
+            LEFT JOIN market_index m ON p.date = m.date
+            LEFT JOIN corporate_actions ca ON p.ticker = ca.ticker AND p.date = ca.date
             WHERE {where}
             ORDER BY p.date ASC
         """

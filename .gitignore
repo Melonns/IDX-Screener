@@ -214,3 +214,10 @@ data/processed/*
 models/*
 !models/.gitkeep
 data/liquid_universe.txt
+data/*.db
+data/*.db-journal
+data/*.sqlite
+scratch/
+*.log
+
+27373-74147-1-PB.md
