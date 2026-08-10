@@ -1,8 +1,8 @@
 """
-contextual_runner.py — Optuna runner untuk ContextualEngine V2.
+vol_accum_runner.py — Optuna runner untuk vol_accum_5d standalone (Tahap 2a).
 
 Pakai:
-  python src/tuning/contextual_runner.py --trials 50
+  python src/tuning/vol_accum_runner.py --trials 50
 """
 
 import os
@@ -19,12 +19,11 @@ _ROOT = _SRC.parent
 sys.path.insert(0, str(_SRC))
 sys.path.insert(0, str(_ROOT))
 
-from tuning.contextual_objective import contextual_objective
+from tuning.contextual_objective_vol import vol_accum_objective
 import config as app_config
 
 
 def make_callback(n_trials: int):
-    """Callback verbose: print per-trial progress ke stdout (keliatan di log)."""
     start_time = time.time()
 
     def callback(study: optuna.Study, trial: optuna.Trial):
@@ -52,16 +51,17 @@ def make_callback(n_trials: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Contextual Engine V2 — Optuna Tuning")
+    parser = argparse.ArgumentParser(description="vol_accum_5d Standalone — Optuna (Tahap 2a)")
     parser.add_argument('--db', type=str, default=None)
     parser.add_argument('--trials', type=int, default=50)
     args = parser.parse_args()
 
     db_path = args.db or os.path.join(app_config.DATA_DIR, 'idx_screener.db')
-    storage_path = os.path.join(app_config.DATA_DIR, 'optuna_contextual.db')
+    # Studi terpisah dari Tahap 1 — history bersih
+    storage_path = os.path.join(app_config.DATA_DIR, 'optuna_vol_accum.db')
     storage = f"sqlite:///{storage_path}"
 
-    study_name = f"contextual_v1_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    study_name = f"vol_accum_v1_{datetime.now().strftime('%Y%m%d_%H%M')}"
     sampler = optuna.samplers.TPESampler(seed=42)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -73,19 +73,20 @@ def main():
         load_if_exists=True,
     )
 
-    print(f"=== Contextual Engine V2 — Optuna ===", flush=True)
+    print(f"=== vol_accum_5d Standalone — Optuna (Tahap 2a) ===", flush=True)
     print(f"Study   : {study_name}", flush=True)
     print(f"Trials  : {args.trials}", flush=True)
     print(f"Storage : {storage_path}", flush=True)
     print(f"Holdout : 2026-02-09 (LOCKED)", flush=True)
+    print(f"Feature : vol_accum_5d_rank (standalone, apple-to-apple vs Tahap 1)", flush=True)
     print(f"Started : {datetime.now().strftime('%H:%M:%S')}", flush=True)
     print("=" * 65, flush=True)
 
     study.optimize(
-        lambda trial: contextual_objective(trial, db_path),
+        lambda trial: vol_accum_objective(trial, db_path),
         n_trials=args.trials,
         callbacks=[make_callback(args.trials)],
-        show_progress_bar=False,   # Kita pakai callback sendiri yang lebih readable di log
+        show_progress_bar=False,
     )
 
     print("\n" + "=" * 65, flush=True)
@@ -102,4 +103,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

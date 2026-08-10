@@ -42,8 +42,21 @@ from scoring.config import SCORING_CONFIG
 
 # ─── Biaya transaksi IDX (roundtrip) ─────────────────────────────────────────
 # Dipakai untuk hitung EV net of fees.
-# Sesuaikan dengan sekuritas yang dipakai kalau lebih presisi.
-IDX_ROUNDTRIP_COST = 0.004  # 0.4% = ~0.15% beli + 0.25% jual (termasuk PPh)
+#
+# Breakdown asumsi konservatif (broker retail standar):
+#   Beli : ~0.15% (fee broker online, vary 0.10-0.18%)
+#   Jual : ~0.15% + PPh 0.10% = 0.25% (PPh final atas penjualan saham)
+#   Total roundtrip: ~0.40%
+#
+# CATATAN PENTING (jangan diubah tanpa pertimbangan):
+# - Ini sengaja konservatif — lebih aman lebihkan estimasi cost
+# - Beberapa sekuritas online (misal: Ajaib, Stockbit, Mirae) bisa lebih rendah
+#   di kisaran 0.28-0.35% total, tapi PPh 0.10% tidak bisa dihindari
+# - Kalau mepet breakeven, cek fee riil broker sebelum live — bisa signifikan
+# - Angka ini adalah PARAMETER yang boleh direvisi dengan dasar yang transparan,
+#   bukan angka sakral. Dokumentasikan kalau diubah.
+IDX_ROUNDTRIP_COST = 0.004  # 0.4% = ~0.15% beli + 0.25% jual (termasuk PPh 0.1%)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
