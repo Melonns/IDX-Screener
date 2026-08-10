@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDX-Screener v2 — Backtest Report</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 2rem; }
+  h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: .3rem;
+       background: linear-gradient(135deg, #38bdf8, #818cf8);
+       -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 1rem; font-weight: 600; color: #94a3b8; margin: 1.5rem 0 .7rem; }
+  .meta { font-size: .85rem; color: #64748b; margin-bottom: 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.2rem; }
+  .card-label { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+  .card-value { font-size: 1.6rem; font-weight: 700; margin-top: .3rem; }
+  .green { color: #22c55e; }
+  .red   { color: #ef4444; }
+  .yellow { color: #f59e0b; }
+  table { width: 100%; border-collapse: collapse; background: #1e293b;
+           border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+  th { background: #0f172a; padding: .8rem 1rem; text-align: left;
+        font-size: .8rem; text-transform: uppercase; color: #64748b; }
+  td { padding: .7rem 1rem; border-top: 1px solid #1e293b; font-size: .9rem; }
+  tr:nth-child(even) td { background: #263347; }
+  .gate-box { background: #1e293b; border: 2px solid #ef4444; border-radius: 12px;
+               padding: 1.5rem; margin-top: 1.5rem; }
+  .gate-label { font-size: 1.2rem; font-weight: 700; color: #ef4444; }
+  .warning { background: #1c1917; border: 1px solid #78350f; border-radius: 8px;
+              padding: 1rem; margin-top: 1.5rem; font-size: .85rem; color: #fbbf24; }
+</style>
+</head>
+<body>
+<h1>IDX-Screener v2 — Backtest Report</h1>
+<p class="meta">
+  Generated: 2026-08-10 13:14 &nbsp;|&nbsp;
+  44 tickers &nbsp;|&nbsp;
+  5 folds &nbsp;|&nbsp;
+  Target: 0.0% gross
+</p>
+
+<h2>Aggregate Metrics</h2>
+<div class="grid">
+  <div class="card">
+    <div class="card-label">Total Sinyal Bullish</div>
+    <div class="card-value">930</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Win Rate (n+3)</div>
+    <div class="card-value red">+50.97%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">EV Net of Fees</div>
+    <div class="card-value red">-0.34%</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Win/Loss Ratio</div>
+    <div class="card-value red">0.99x</div>
+  </div>
+  <div class="card">
+    <div class="card-label">EV Sharpe-like</div>
+    <div class="card-value">-0.701</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Fold EV Positif</div>
+    <div class="card-value red">2/5</div>
+  </div>
+</div>
+
+<h2>Konsistensi Antar Fold</h2>
+<table>
+  <tr><th>Fold</th><th>EV Net</th><th>Win Rate</th></tr>
+  
+            <tr>
+                <td>Fold 1</td>
+                <td>-0.29%</td>
+                <td>+22.04%</td>
+            </tr>
+            <tr>
+                <td>Fold 2</td>
+                <td>-1.40%</td>
+                <td>+21.62%</td>
+            </tr>
+            <tr>
+                <td>Fold 3</td>
+                <td>+0.18%</td>
+                <td>+29.88%</td>
+            </tr>
+            <tr>
+                <td>Fold 4</td>
+                <td>+0.06%</td>
+                <td>+33.93%</td>
+            </tr>
+            <tr>
+                <td>Fold 5</td>
+                <td>-0.52%</td>
+                <td>+38.01%</td>
+            </tr>
+</table>
+
+<h2>Breakdown per Score Bucket</h2>
+<p style="font-size:.8rem;color:#64748b;margin-bottom:.5rem">
+  Perhatikan kolom N (sample count). Bucket dengan sample &lt; 30 tidak reliable.
+</p>
+<table>
+  <tr>
+    <th>Bucket</th><th>N Sinyal</th><th>Win Rate</th>
+    <th>Avg Win</th><th>Avg Loss</th><th>EV Net</th><th>Reliability</th>
+  </tr>
+  <tr><td>50-69%</td><td>0</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+
+            <tr>
+                <td>70-79%</td>
+                <td>765</td>
+                <td>50.5%</td>
+                <td>+3.92%</td>
+                <td>-4.27%</td>
+                <td>-0.53%</td>
+                <td style="color:#22c55e;font-weight:bold">OK</td>
+            </tr>
+            <tr>
+                <td>80-89%</td>
+                <td>152</td>
+                <td>53.9%</td>
+                <td>+4.99%</td>
+                <td>-4.73%</td>
+                <td>+0.12%</td>
+                <td style="color:#22c55e;font-weight:bold">OK</td>
+            </tr>
+            <tr>
+                <td>90-100%</td>
+                <td>13</td>
+                <td>46.2%</td>
+                <td>+22.22%</td>
+                <td>-7.50%</td>
+                <td>+5.82%</td>
+                <td style="color:#f59e0b;font-weight:bold">HATI-HATI</td>
+            </tr>
+</table>
+
+<div class="gate-box">
+  <div class="gate-label">Phase 1 Gate: BELUM LOLOS ✗</div>
+  <ul style="margin-top:.8rem;padding-left:1.2rem;font-size:.9rem;color:#94a3b8">
+    <li>EV net &gt; 0.3%: ✗ (-0.34%)</li>
+    <li>Win rate &gt;= 55%: ✗ (+50.97%)</li>
+    <li>Avg Win/Loss &gt;= 1.2x: ✗ (0.99x)</li>
+    <li>EV positif &gt;= 4 fold: ✗ (2/5 fold)</li>
+  </ul>
+</div>
+
+<div class="warning">
+  ⚠️ Hasil backtest menggunakan data historis. Survivorship bias mungkin ada
+  (saham yang delisting tidak ikut training). Performa masa lalu tidak menjamin
+  hasil ke depan. Lakukan paper trading 2–4 minggu sebelum live.
+</div>
+
+</body>
+</html>

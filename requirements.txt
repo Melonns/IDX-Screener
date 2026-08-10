@@ -13,3 +13,12 @@ xgboost
 lightgbm
 pyarrow
 imbalanced-learn
+joblib
+numpy
+
+# Phase 1 Optuna Tuning
+optuna
+optuna-dashboard
+
+# Phase 2 (ML layer) — install saat masuk Phase 2:
+# shap

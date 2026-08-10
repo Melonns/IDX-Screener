@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnostic Report - IDX-Screener v2</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 2rem; }
+  h1, h2, h3 { margin-bottom: 1rem; color: #38bdf8; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+  table { width: 100%; border-collapse: collapse; background: #1e293b;
+           border: 1px solid #334155; border-radius: 8px; overflow: hidden; margin-bottom: 2rem; }
+  th { background: #0f172a; padding: 0.8rem; text-align: left; font-size: 0.85rem; color: #94a3b8; }
+  td { padding: 0.8rem; border-top: 1px solid #1e293b; font-size: 0.9rem; }
+  tr:nth-child(even) td { background: #263347; }
+  .box { background: #1e293b; padding: 1.5rem; border-radius: 8px; border: 1px solid #334155; margin-bottom: 2rem; }
+</style>
+</head>
+<body>
+    <h1>Per-Indicator Diagnostic Report</h1>
+    <p>Target Return: N+3 (Net of fees). Total Sinyal: 27093</p>
+    
+    <div class="box">
+        
+    <h3>RVOL Data Quality Check</h3>
+    <ul>
+        <li>Total baris harga di DB: 30,774</li>
+        <li>Baris dengan Volume mentah = 0: 607 (2.0%)</li>
+        <li>Total baris indikator dengan RVOL valid: 29,331</li>
+        <li>Baris dengan RVOL tepat 0.0: 0 (0.0%)</li>
+        <li>Baris dengan RVOL < 1.0 (Skor=0): 18,401 (62.7%)</li>
+    </ul>
+    <p><b>Kesimpulan RVOL:</b> Jika banyak skor RVOL bernilai 0 di engine, itu karena mayoritas hari trading (63%) memiliki volume di bawah rata-rata 20 hari (wajar untuk pasar yang tidak selalu trending/spike). Bukan berarti datanya cacat (Volume asli yang 0 hanya 2.0%).</p>
+    
+    </div>
+    
+    <h2>1. Per-Indicator Contribution (Information Coefficient)</h2>
+    <p style="margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;">
+        <b>Cross-Sectional Rank IC</b>: Korelasi Spearman harian antara skor komponen vs return, lalu dirata-rata. 
+        Membersihkan noise kondisi pasar makro untuk melihat <i>relative strength</i> antar saham.
+    </p>
+    <table>
+        <tr>
+            <th>Indikator</th>
+            <th>WR (Kuat)</th>
+            <th>WR (Lemah)</th>
+            <th>CS IC (N+3)</th>
+            <th>CS IC (N+5)</th>
+            <th>CS IC (N+10)</th>
+            <th>Global IC (N+3)</th>
+            <th>N (Kuat)</th>
+            <th>N (Lemah)</th>
+            <th>Verdict</th>
+        </tr>
+        
+        <tr>
+            <td>EMA Cross</td>
+            <td>42.3%</td>
+            <td>41.7%</td>
+            <td><b>+0.001</b></td>
+            <td>+0.009</td>
+            <td>+0.012</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: -0.002</td>
+            <td>8946</td>
+            <td>18147</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>Volume (RVOL)</td>
+            <td>42.1%</td>
+            <td>41.8%</td>
+            <td><b>+0.001</b></td>
+            <td>-0.003</td>
+            <td>+0.004</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: -0.005</td>
+            <td>4050</td>
+            <td>23043</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>RSI (Mean-Revert)</td>
+            <td>39.9%</td>
+            <td>42.6%</td>
+            <td><b>-0.036</b></td>
+            <td>-0.025</td>
+            <td>-0.011</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: -0.017</td>
+            <td>7628</td>
+            <td>19465</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>MACD (Graded Momentum)</td>
+            <td>39.1%</td>
+            <td>42.7%</td>
+            <td><b>-0.038</b></td>
+            <td>-0.035</td>
+            <td>-0.033</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: -0.032</td>
+            <td>6413</td>
+            <td>20680</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>Support/Resistance</td>
+            <td>38.9%</td>
+            <td>42.2%</td>
+            <td><b>+0.023</b></td>
+            <td>+0.017</td>
+            <td>+0.024</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: +0.003</td>
+            <td>2666</td>
+            <td>24427</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>Bollinger Band</td>
+            <td>41.4%</td>
+            <td>42.1%</td>
+            <td><b>+0.033</b></td>
+            <td>+0.019</td>
+            <td>+0.017</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: +0.017</td>
+            <td>7861</td>
+            <td>19232</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+        <tr>
+            <td>Candlestick</td>
+            <td>37.5%</td>
+            <td>42.0%</td>
+            <td><b>-0.017</b></td>
+            <td>-0.015</td>
+            <td>-0.008</td>
+            <td style="font-size:0.8rem;color:#94a3b8">Global N3: -0.010</td>
+            <td>848</td>
+            <td>26245</td>
+            <td><span style='color:#f59e0b'>No Edge (Noise)</span></td>
+        </tr>
+        
+    </table>
+    
+    <h2>2. Correlation Matrix Antar Indikator</h2>
+    <p style="margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;">
+        Cek redundansi. Jika ada nilai > +0.70 (Merah), berarti dua indikator tersebut menghitung hal yang hampir sama. 
+        Jangan beri bobot besar ke keduanya karena akan "double counting".
+    </p>
+    <table>
+        <tr><th>Indikator</th><th>EMA Cross</th><th>Volume (RVOL)</th><th>RSI (Mean-Revert)</th><th>MACD (Graded Momentum)</th><th>Support/Resistance</th><th>Bollinger Band</th><th>Candlestick</th></tr><tr><td><b>EMA Cross</b></td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>+0.03</td><td style='background-color:transparent'>+0.32</td><td style='background-color:transparent'>+0.05</td><td style='background-color:transparent'>-0.00</td><td style='background-color:transparent'>-0.36</td><td style='background-color:transparent'>+0.02</td></tr><tr><td><b>Volume (RVOL)</b></td><td style='background-color:transparent'>+0.03</td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>+0.09</td><td style='background-color:transparent'>+0.14</td><td style='background-color:transparent'>+0.24</td><td style='background-color:transparent'>+0.00</td><td style='background-color:transparent'>-0.01</td></tr><tr><td><b>RSI (Mean-Revert)</b></td><td style='background-color:transparent'>+0.32</td><td style='background-color:transparent'>+0.09</td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>+0.21</td><td style='background-color:transparent'>+0.11</td><td style='background-color:transparent'>-0.27</td><td style='background-color:transparent'>+0.12</td></tr><tr><td><b>MACD (Graded Momentum)</b></td><td style='background-color:transparent'>+0.05</td><td style='background-color:transparent'>+0.14</td><td style='background-color:transparent'>+0.21</td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>+0.13</td><td style='background-color:transparent'>-0.30</td><td style='background-color:transparent'>+0.04</td></tr><tr><td><b>Support/Resistance</b></td><td style='background-color:transparent'>-0.00</td><td style='background-color:transparent'>+0.24</td><td style='background-color:transparent'>+0.11</td><td style='background-color:transparent'>+0.13</td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>+0.01</td><td style='background-color:transparent'>+0.04</td></tr><tr><td><b>Bollinger Band</b></td><td style='background-color:transparent'>-0.36</td><td style='background-color:transparent'>+0.00</td><td style='background-color:transparent'>-0.27</td><td style='background-color:transparent'>-0.30</td><td style='background-color:transparent'>+0.01</td><td style='background-color:#334155'>+1.00</td><td style='background-color:transparent'>-0.04</td></tr><tr><td><b>Candlestick</b></td><td style='background-color:transparent'>+0.02</td><td style='background-color:transparent'>-0.01</td><td style='background-color:transparent'>+0.12</td><td style='background-color:transparent'>+0.04</td><td style='background-color:transparent'>+0.04</td><td style='background-color:transparent'>-0.04</td><td style='background-color:#334155'>+1.00</td></tr>
+    </table>
+    
+    <div class="box" style="border-color:#f59e0b">
+        <h3>Rekomendasi Sebelum Optuna:</h3>
+        <ul style="margin-left:1.5rem; line-height:1.6">
+            <li>Review kolom <b>Verdict</b>. Jika ada indikator berlabel 'Negatively Correlated' atau 'Noise', pertimbangkan untuk menghapus/mengecilkan search space bobot indikator tersebut di Phase 1 Optuna (jangan biarkan Optuna mencarinya dari rentang 5-35).</li>
+            <li>Perhatikan <b>IC per Fold</b>. Jika rata-rata IC bagus tapi hanya didorong oleh 1 fold ekstrim, berarti indikator itu <i>regime-dependent</i> (hanya works di uptrend/downtrend tertentu).</li>
+            <li>Cek <b>Correlation Matrix</b>. Jika ada 2 indikator yang korelasinya merah (>0.7), kurangi range bobot salah satunya di Optuna.</li>
+        </ul>
+    </div>
+</body>
+</html>
