@@ -5,7 +5,7 @@ Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
 - Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Menyajikan fakta teknikal deskriptif: Rarity, Persistence (Streak), Liquidity, Market Breadth, dan Sector Context.
+- Auto-fallback ke yfinance jika data di SQLite lokal kosong (misal saat berjalan di Replit).
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
@@ -21,6 +21,8 @@ sys.path.insert(0, str(_SRC))
 sys.path.insert(0, str(_ROOT))
 
 from data.database import DatabaseManager
+from data.provider import YFinanceProvider
+from data.ingestion import compute_indicators
 from scoring.observation_tags import evaluate_observation_tags, get_liquidity_note
 from scoring.rarity_context import get_rarity_context, get_condition_streak
 from scoring.market_breadth import get_market_breadth_context, get_sector_context
@@ -36,6 +38,7 @@ Gunakan sebagai titik awal riset manual (berita, laporan keuangan, kondisi sekto
 class TechnicalObservationScanner:
     def __init__(self, db: DatabaseManager):
         self.db = db
+        self.provider = YFinanceProvider(db)
 
     def scan_unusual_activity(
         self,
@@ -46,10 +49,14 @@ class TechnicalObservationScanner:
     ) -> List[Dict[str, Any]]:
         """
         Scan stock universe for stocks showing unusual technical activity relative to their own history.
-        Includes Rarity Context, Streaks, Liquidity Notes, Market Breadth, and Sector Context.
+        If data is missing from local SQLite (e.g. freshly cloned Replit), automatically fetches from yfinance.
         """
         if tickers is None:
             tickers = self.db.get_tickers()
+            if not tickers: # Default universe fallback if DB is brand new
+                tickers = ['BBRI.JK', 'BBCA.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
+                           'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'CTRA.JK', 'UNVR.JK',
+                           'HMSP.JK', 'ICBP.JK', 'ISAT.JK', 'ACES.JK', 'GGRM.JK']
 
         scanned_results = []
         total_universe = len(tickers)
@@ -59,8 +66,21 @@ class TechnicalObservationScanner:
             if not ticker_clean.endswith('.JK'):
                 ticker_clean = f"{ticker_clean}.JK"
 
-            # Load extended history (up to 252 days for rarity calculation)
+            # 1. Load from DB
             df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
+
+            # 2. Auto-fetch fallback if DB is empty / missing rows
+            if df.empty or len(df) < lookback_days:
+                try:
+                    df_prices = self.provider.get_or_fetch(ticker_clean, period_days=252*2)
+                    if not df_prices.empty:
+                        df_ind = compute_indicators(df_prices)
+                        self.db.save_indicators(ticker_clean, df_ind)
+                        df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
+                except Exception as exc:
+                    print(f"[Scanner] Warning: Failed auto-fetch for {ticker_clean}: {exc}")
+                    continue
+
             if df.empty or len(df) < lookback_days:
                 continue
 

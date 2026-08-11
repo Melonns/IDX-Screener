@@ -6,6 +6,7 @@ Fitur Telegram Bot v3:
    beraktivitas di luar kebiasaan (Unusual Activity) dengan fakta deskriptif + Rarity + Market Breadth + Sector Context.
 2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut
    (Volume percentile, RSI percentile, EMA trend, Breakout 20d, Turnover 5D).
+   Auto-fetch dari yfinance jika data di SQLite lokal Replit belum ada.
 3. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
 
 CATATAN:
@@ -32,6 +33,7 @@ sys.path.insert(0, str(_HERE))
 from data.database import DatabaseManager
 from scoring.scanner import TechnicalObservationScanner
 from data.forward_tracker import DividendForwardTracker
+from data.ingestion import compute_indicators
 import config as app_config
 
 app = Flask(__name__)
@@ -184,17 +186,29 @@ def telegram_webhook():
     if results:
         report = scanner.format_telegram_report(results)
     else:
-        # If tickers have no unusual activity today, display basic status
+        # If tickers have no unusual activity today, display basic status & auto-fetch if needed
         lines = [f"📋 **Fakta Observasi Teknikal ({tickers[0]})**\n"]
         for t in tickers:
-            df = db.get_prices_with_indicators(t if t.endswith('.JK') else f"{t}.JK")
+            t_clean = t if t.endswith('.JK') else f"{t}.JK"
+            df = db.get_prices_with_indicators(t_clean)
+            if df.empty or len(df) < 60:
+                try:
+                    df_p = scanner.provider.get_or_fetch(t_clean, period_days=252*2)
+                    if not df_p.empty:
+                        df_ind = compute_indicators(df_p)
+                        db.save_indicators(t_clean, df_ind)
+                        df = db.get_prices_with_indicators(t_clean)
+                except Exception:
+                    pass
+
             if not df.empty:
                 last_row = df.iloc[-1]
                 close_p  = float(last_row['Close'])
                 rsi_val  = float(last_row['rsi_14']) if 'rsi_14' in last_row and pd.notna(last_row['rsi_14']) else 'N/A'
-                lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_val:.1f} — Tidak ada aktivitas di luar kebiasaan histori 60 hari hari ini.")
+                rsi_str  = f"{rsi_val:.1f}" if isinstance(rsi_val, float) else rsi_val
+                lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_str} — Tidak ada aktivitas di luar kebiasaan histori 60 hari hari ini.")
             else:
-                lines.append(f"• **{t}**: Data tidak ditemukan.")
+                lines.append(f"• **{t}**: Data tidak ditemukan (gagal fetch).")
         lines.append(f"\n---\n{scanner.MANDATORY_DISCLAIMER if hasattr(scanner, 'MANDATORY_DISCLAIMER') else ''}")
         report = "\n".join(lines)
 
