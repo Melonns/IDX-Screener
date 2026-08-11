@@ -5,7 +5,7 @@ Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
 - Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Auto-fetch seluruh 45 saham universe jika DB di Replit belum lengkap.
+- Auto-fetch seluruh pasar BEI (800+ saham lama & baru) jika DB di Replit belum lengkap.
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
@@ -23,6 +23,7 @@ sys.path.insert(0, str(_ROOT))
 from data.database import DatabaseManager
 from data.provider import YFinanceProvider
 from data.ingestion import compute_indicators
+from data.idx_universe import ALL_IDX_800_TICKERS
 from scoring.observation_tags import evaluate_observation_tags, get_liquidity_note
 from scoring.rarity_context import get_rarity_context, get_condition_streak
 from scoring.market_breadth import get_market_breadth_context, get_sector_context
@@ -33,14 +34,6 @@ MANDATORY_DISCLAIMER = """
 Riset internal membuktikan indikator teknikal murni tidak memprediksi arah harga ke depan.
 Gunakan sebagai titik awal riset manual (berita, laporan keuangan, kondisi sektor).
 """.strip()
-
-DEFAULT_45_UNIVERSE = [
-    'AALI.JK', 'ACES.JK', 'ADRO.JK', 'AMRT.JK', 'ANTM.JK', 'ASII.JK', 'BBCA.JK', 'BBNI.JK', 'BBRI.JK', 'BMRI.JK',
-    'BSDE.JK', 'BUMI.JK', 'CPIN.JK', 'CTRA.JK', 'EXCL.JK', 'GOTO.JK', 'GGRM.JK', 'GJTL.JK', 'HMSP.JK', 'ICBP.JK',
-    'INCO.JK', 'INDF.JK', 'INKP.JK', 'INTP.JK', 'ISAT.JK', 'ITMG.JK', 'JPFA.JK', 'JSMR.JK', 'KLBF.JK', 'LPPF.JK',
-    'MDKA.JK', 'MEDC.JK', 'MIKA.JK', 'MNCN.JK', 'PGAS.JK', 'PTBA.JK', 'PTPP.JK', 'PWON.JK', 'RALS.JK', 'SCMA.JK',
-    'SIDO.JK', 'SMGR.JK', 'TLKM.JK', 'TPIA.JK', 'UNVR.JK'
-]
 
 
 class TechnicalObservationScanner:
@@ -57,14 +50,15 @@ class TechnicalObservationScanner:
     ) -> List[Dict[str, Any]]:
         """
         Scan stock universe for stocks showing unusual technical activity relative to their own history.
+        Scans full 800+ IDX tickers if no specific ticker specified.
         If data is missing from local SQLite (e.g. freshly cloned Replit), automatically fetches from yfinance.
         """
         if tickers is None:
             db_tickers = self.db.get_tickers()
-            if len(db_tickers) >= 30:
+            if len(db_tickers) >= 500:
                 tickers = db_tickers
             else:
-                tickers = DEFAULT_45_UNIVERSE
+                tickers = ALL_IDX_800_TICKERS
 
         scanned_results = []
         total_universe = len(tickers)
@@ -196,7 +190,7 @@ class TechnicalObservationScanner:
         Format scan results for CLI output.
         """
         if not scanned_results:
-            return "Tidak ditemukan saham dengan aktivitas teknikal di luar kebiasaan."
+            return "Tidak ditemukan saham meyakinkan dengan aktivitas teknikal di luar kebiasaan."
 
         date_hdr = as_of_date or scanned_results[0]['date']
         lines = [
@@ -235,6 +229,6 @@ if __name__ == '__main__':
     db = DatabaseManager(db_path)
     scanner = TechnicalObservationScanner(db)
 
-    print("Running Enhanced Technical Observation Scanner...")
+    print("Running Enhanced Technical Observation Scanner across ALL 800+ Tickers...")
     results = scanner.scan_unusual_activity(max_results=5)
     print(scanner.format_cli_report(results))

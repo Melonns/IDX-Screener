@@ -4,10 +4,10 @@ main.py — Flask & Telegram Bot Server for IDX-Screener v3
 Fitur Telegram Bot v3:
 1. /scan atau pesan otomatis: Scan seluruh universe saham (45 saham) & tampilkan 5-15 saham
    beraktivitas di luar kebiasaan (Unusual Activity) dengan fakta deskriptif + Rarity + Market Breadth + Sector Context.
-2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut
-   (Volume percentile, RSI percentile, EMA trend, Breakout 20d, Turnover 5D).
-   Auto-fetch dari yfinance jika data di SQLite lokal Replit belum ada.
+   Dilengkapi pesan loading interaktif (editMessageText & typing indicator).
+2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut.
 3. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
+4. /ping: Tes koneksi & latensi jaringan bot real-time.
 
 CATATAN:
 - TIDAK ADA label "BULLISH", "BEARISH", "BUY", "SELL", atau skor 0-100.
@@ -56,6 +56,15 @@ def send_telegram_message(chat_id: int, text: str) -> dict:
     return resp.json()
 
 
+def edit_telegram_message(chat_id: int, message_id: int, text: str) -> dict:
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured')
+    url = f'{TELEGRAM_API_URL}/bot{TELEGRAM_BOT_TOKEN}/editMessageText'
+    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'parse_mode': 'Markdown'}
+    resp = requests.post(url, json=payload, timeout=15)
+    return resp.json()
+
+
 def send_chat_action(chat_id: int, action: str = 'typing') -> dict:
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured')
@@ -72,13 +81,16 @@ def get_help_message() -> str:
 📌 *Cara Penggunaan Telegram Bot:*
 
 1️⃣ */scan* (atau kirim tombol Scan):
-   Memindai seluruh 45 saham universe dan menampilkan daftar 5–15 saham yang sedang beraktivitas di luar kebiasaan histori 60 hari.
+   Memindai seluruh 45 saham universe & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan indicator loading interaktif).
 
 2️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
-   Melihat fakta observasi deskriptif (Volume spike percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
+   Melihat fakta observasi deskriptif (Volume percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
 
 3️⃣ */dividends*:
    Melihat sinyal aktif & mendatang dari strategi *Dividend Cum-Date Drift* (strategi yang lolos validasi out-of-sample).
+
+4️⃣ */ping*:
+   Tes koneksi jaringan, status server, dan latensi bot real-time.
 
 *Perintah Tambahan:*
 • /start - Mulai bot
@@ -123,6 +135,7 @@ def scan_api():
 
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
+    t_start = time.time()
     if not TELEGRAM_BOT_TOKEN:
         return jsonify({'error': 'TELEGRAM_BOT_TOKEN is not configured'}), 500
 
@@ -145,17 +158,66 @@ def telegram_webhook():
         send_telegram_message(chat_id, get_help_message())
         return jsonify({'ok': True})
 
-    # Handle /scan command
+    # Handle /ping command (network & latency test)
+    if text_lower in ['/ping', 'ping', 'tes', 'test']:
+        send_chat_action(chat_id, 'typing')
+        latency_ms = int((time.time() - t_start) * 1000)
+        
+        # Check SQLite DB connection
+        try:
+            db_tickers_count = len(db.get_tickers())
+            db_status_str = f"Normal ({db_tickers_count} saham di-cache)"
+        except Exception:
+            db_status_str = "Koneksi DB Bermasalah"
+
+        ping_msg = (
+            f"🏓 *Pong! Jaringan Bot Normal*\n\n"
+            f"• **Latensi Jaringan** : `{latency_ms} ms`\n"
+            f"• **Status Server**    : `Online ✅`\n"
+            f"• **Status Database**  : `{db_status_str}`\n"
+            f"• **Versi Bot**        : `IDX-Screener v3 (Descriptive)`"
+        )
+        send_telegram_message(chat_id, ping_msg)
+        return jsonify({'ok': True})
+
+    # Handle /scan command with INTERACTIVE LOADING MESSAGE
     if text_lower in ['/scan', 'scan', 'scan hari ini']:
+        send_chat_action(chat_id, 'typing')
+        
+        # 1. Send loading message
+        load_res = send_telegram_message(
+            chat_id,
+            "⏳ *Sedang memindai 45 saham universe & fakta teknikal harian...*\n"
+            "_Proses ini mengunduh & mengevaluasi fakta 60-hari. Harap tunggu beberapa detik._"
+        )
+        msg_id = load_res.get('result', {}).get('message_id')
+
+        # 2. Run scan
         send_chat_action(chat_id, 'typing')
         results = scanner.scan_unusual_activity(max_results=10)
         report  = scanner.format_telegram_report(results)
-        send_telegram_message(chat_id, report)
+
+        # 3. Edit loading message into final report if message_id exists, else send new
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, report)
+            except Exception:
+                send_telegram_message(chat_id, report)
+        else:
+            send_telegram_message(chat_id, report)
+
         return jsonify({'ok': True})
 
-    # Handle /dividends command
+    # Handle /dividends command with INTERACTIVE LOADING MESSAGE
     if text_lower in ['/dividends', 'dividend', 'dividen']:
         send_chat_action(chat_id, 'typing')
+        
+        load_res = send_telegram_message(
+            chat_id,
+            "⏳ *Sedang memuat data sinyal Dividend Cum-Date Drift (V3_LOCKED)...*"
+        )
+        msg_id = load_res.get('result', {}).get('message_id')
+
         df_act = div_tracker.scan_upcoming_signals()
         if not df_act.empty:
             active_list = []
@@ -171,23 +233,37 @@ def telegram_webhook():
         else:
             msg = "💰 *Dividend Cum-Date Drift Tracker*\n\nSaat ini tidak ada event dividen qualified (Yield >= 4.0%) yang masuk periode entry."
 
-        send_telegram_message(chat_id, msg)
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, msg)
+            except Exception:
+                send_telegram_message(chat_id, msg)
+        else:
+            send_telegram_message(chat_id, msg)
+
         return jsonify({'ok': True})
 
-    # Handle specific Tickers input (e.g. ASII BBCA)
+    # Handle specific Tickers input (e.g. ASII BBCA) with INTERACTIVE LOADING MESSAGE
     tickers = parse_tickers_from_text(text)
     if not tickers:
-        send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan atau ketik kode saham (misal: `BBRI ASII`) atau /help.')
+        send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan, /ping, /dividends, atau ketik kode saham (misal: `BBRI ASII`).')
         return jsonify({'ok': True})
 
     send_chat_action(chat_id, 'typing')
+    ticker_str = ", ".join([t.replace('.JK', '') for t in tickers])
+    load_res = send_telegram_message(
+        chat_id,
+        f"⏳ *Sedang memproses & mengambil data observasi {ticker_str}...*"
+    )
+    msg_id = load_res.get('result', {}).get('message_id')
+
     results = scanner.scan_unusual_activity(tickers=tickers, max_results=len(tickers))
     
     if results:
         report = scanner.format_telegram_report(results)
     else:
         # If tickers have no unusual activity today, display basic status & auto-fetch if needed
-        lines = [f"📋 **Fakta Observasi Teknikal ({tickers[0]})**\n"]
+        lines = [f"📋 **Fakta Observasi Teknikal ({tickers[0].replace('.JK','')})**\n"]
         for t in tickers:
             t_clean = t if t.endswith('.JK') else f"{t}.JK"
             df = db.get_prices_with_indicators(t_clean)
@@ -212,7 +288,14 @@ def telegram_webhook():
         lines.append(f"\n---\n{scanner.MANDATORY_DISCLAIMER if hasattr(scanner, 'MANDATORY_DISCLAIMER') else ''}")
         report = "\n".join(lines)
 
-    send_telegram_message(chat_id, report)
+    if msg_id:
+        try:
+            edit_telegram_message(chat_id, msg_id, report)
+        except Exception:
+            send_telegram_message(chat_id, report)
+    else:
+        send_telegram_message(chat_id, report)
+
     return jsonify({'ok': True})
 
 
