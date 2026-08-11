@@ -5,7 +5,7 @@ Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
 - Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Auto-fallback ke yfinance jika data di SQLite lokal kosong (misal saat berjalan di Replit).
+- Auto-fetch seluruh 45 saham universe jika DB di Replit belum lengkap.
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
@@ -34,6 +34,14 @@ Riset internal membuktikan indikator teknikal murni tidak memprediksi arah harga
 Gunakan sebagai titik awal riset manual (berita, laporan keuangan, kondisi sektor).
 """.strip()
 
+DEFAULT_45_UNIVERSE = [
+    'AALI.JK', 'ACES.JK', 'ADRO.JK', 'AMRT.JK', 'ANTM.JK', 'ASII.JK', 'BBCA.JK', 'BBNI.JK', 'BBRI.JK', 'BMRI.JK',
+    'BSDE.JK', 'BUMI.JK', 'CPIN.JK', 'CTRA.JK', 'EXCL.JK', 'GOTO.JK', 'GGRM.JK', 'GJTL.JK', 'HMSP.JK', 'ICBP.JK',
+    'INCO.JK', 'INDF.JK', 'INKP.JK', 'INTP.JK', 'ISAT.JK', 'ITMG.JK', 'JPFA.JK', 'JSMR.JK', 'KLBF.JK', 'LPPF.JK',
+    'MDKA.JK', 'MEDC.JK', 'MIKA.JK', 'MNCN.JK', 'PGAS.JK', 'PTBA.JK', 'PTPP.JK', 'PWON.JK', 'RALS.JK', 'SCMA.JK',
+    'SIDO.JK', 'SMGR.JK', 'TLKM.JK', 'TPIA.JK', 'UNVR.JK'
+]
+
 
 class TechnicalObservationScanner:
     def __init__(self, db: DatabaseManager):
@@ -52,11 +60,11 @@ class TechnicalObservationScanner:
         If data is missing from local SQLite (e.g. freshly cloned Replit), automatically fetches from yfinance.
         """
         if tickers is None:
-            tickers = self.db.get_tickers()
-            if not tickers: # Default universe fallback if DB is brand new
-                tickers = ['BBRI.JK', 'BBCA.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
-                           'ANTM.JK', 'ADRO.JK', 'PTBA.JK', 'CTRA.JK', 'UNVR.JK',
-                           'HMSP.JK', 'ICBP.JK', 'ISAT.JK', 'ACES.JK', 'GGRM.JK']
+            db_tickers = self.db.get_tickers()
+            if len(db_tickers) >= 30:
+                tickers = db_tickers
+            else:
+                tickers = DEFAULT_45_UNIVERSE
 
         scanned_results = []
         total_universe = len(tickers)
