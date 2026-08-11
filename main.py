@@ -2,7 +2,7 @@
 main.py — Flask & Telegram Bot Server for IDX-Screener v3
 
 Fitur Telegram Bot v3:
-1. /scan atau pesan otomatis: Scan seluruh universe saham (45 saham) & tampilkan 5-15 saham
+1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI (800+ saham) & tampilkan 5-15 saham
    beraktivitas di luar kebiasaan (Unusual Activity) dengan fakta deskriptif + Rarity + Market Breadth + Sector Context.
    Dilengkapi pesan loading interaktif (editMessageText & typing indicator).
 2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut.
@@ -81,7 +81,7 @@ def get_help_message() -> str:
 📌 *Cara Penggunaan Telegram Bot:*
 
 1️⃣ */scan* (atau kirim tombol Scan):
-   Memindai seluruh 45 saham universe & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan indicator loading interaktif).
+   Memindai seluruh pasar BEI (800+ saham) & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan indicator loading interaktif).
 
 2️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
    Melihat fakta observasi deskriptif (Volume percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
@@ -187,7 +187,7 @@ def telegram_webhook():
         # 1. Send loading message
         load_res = send_telegram_message(
             chat_id,
-            "⏳ *Sedang memindai 45 saham universe & fakta teknikal harian...*\n"
+            "⏳ *Sedang memindai seluruh saham pasar BEI (800+ saham)...*\n"
             "_Proses ini mengunduh & mengevaluasi fakta 60-hari. Harap tunggu beberapa detik._"
         )
         msg_id = load_res.get('result', {}).get('message_id')
