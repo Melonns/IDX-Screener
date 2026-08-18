@@ -27,6 +27,7 @@ from data.provider import YFinanceProvider
 from data.ingestion import compute_indicators
 from data.idx_universe import fetch_live_idx_tickers, ALL_IDX_800_TICKERS
 from scoring.observation_tags import evaluate_observation_tags, get_liquidity_note
+from scoring.observation_opinion import generate_observation_opinion
 from scoring.rarity_context import get_rarity_context, get_condition_streak
 from scoring.market_breadth import get_market_breadth_context, get_sector_context
 import config as app_config
@@ -149,6 +150,11 @@ class TechnicalObservationScanner:
 
         liquidity_note = get_liquidity_note(turnover_5d)
 
+        # Generate observation opinion based on tag combination
+        opinion = generate_observation_opinion(
+            processed_tags, close_price=close_p, ticker=ticker_clean
+        )
+
         return {
             'ticker': ticker_clean,
             'date': date_str,
@@ -157,7 +163,8 @@ class TechnicalObservationScanner:
             'liquidity_note': liquidity_note,
             'unusual_count': len(unusual_tags),
             'all_tags': processed_tags,
-            'unusual_tags': [t for t in processed_tags if t.get('is_unusual')]
+            'unusual_tags': [t for t in processed_tags if t.get('is_unusual')],
+            'opinion': opinion,
         }
 
     def scan_unusual_activity(
@@ -310,6 +317,11 @@ class TechnicalObservationScanner:
 
             liquidity_note = get_liquidity_note(turnover_5d)
 
+            # Generate observation opinion
+            opinion = generate_observation_opinion(
+                processed_tags, close_price=close_p, ticker=ticker_clean
+            )
+
             results.append({
                 'ticker': ticker_clean,
                 'date': date_str,
@@ -318,7 +330,8 @@ class TechnicalObservationScanner:
                 'liquidity_note': liquidity_note,
                 'unusual_count': len(unusual_tags),
                 'all_tags': processed_tags,
-                'unusual_tags': [t for t in processed_tags if t.get('is_unusual')]
+                'unusual_tags': [t for t in processed_tags if t.get('is_unusual')],
+                'opinion': opinion,
             })
 
         return results
@@ -360,6 +373,7 @@ class TechnicalObservationScanner:
     def format_telegram_report(self, scanned_results: List[Dict[str, Any]], as_of_date: Optional[str] = None) -> str:
         """
         Format scan results into clean, descriptive Telegram markdown message.
+        Includes observation opinions for each stock.
         """
         if not scanned_results:
             return f"📋 **Scan Aktivitas Harian**\n\nTidak ditemukan saham dengan aktivitas di luar kebiasaan harian.\n\n{MANDATORY_DISCLAIMER}"
@@ -376,11 +390,22 @@ class TechnicalObservationScanner:
             liq    = item['liquidity_note']
             lines.append(f"**{i}. {ticker}** (Rp {close:,.0f}) — _{liq}_")
 
+            # Observation tags
             for tag in item['all_tags']:
                 icon = "🔥" if tag.get('is_unusual') else "•"
                 lines.append(f"   {icon} {tag['description']}")
                 if tag.get('rarity_text'):
                     lines.append(f"      └─ {tag['rarity_text']}")
+
+            # Observation opinion (if available)
+            opinion = item.get('opinion')
+            if opinion and opinion.get('bullets'):
+                lines.append(f"\n   💡 *Opini Observasi:*")
+                for bullet in opinion['bullets']:
+                    lines.append(f"   • {bullet}")
+                if opinion.get('overall_note'):
+                    lines.append(f"   _{opinion['overall_note']}_")
+                lines.append("")
 
             if item.get('breadth_context'):
                 lines.append(f"   🌐 {item['breadth_context']}")
@@ -394,7 +419,7 @@ class TechnicalObservationScanner:
 
     def format_cli_report(self, scanned_results: List[Dict[str, Any]], as_of_date: Optional[str] = None) -> str:
         """
-        Format scan results for CLI output.
+        Format scan results for CLI output. Includes observation opinions.
         """
         if not scanned_results:
             return "Tidak ditemukan saham meyakinkan dengan aktivitas teknikal di luar kebiasaan."
@@ -418,6 +443,15 @@ class TechnicalObservationScanner:
                 lines.append(f"{prefix}{tag['description']}")
                 if tag.get('rarity_text'):
                     lines.append(f"        └─ {tag['rarity_text']}")
+
+            # Observation opinion
+            opinion = item.get('opinion')
+            if opinion and opinion.get('bullets'):
+                lines.append(f"\n    💡 OPINI OBSERVASI [{opinion.get('attention_level', '?')}]:")
+                for bullet in opinion['bullets']:
+                    lines.append(f"      • {bullet}")
+                if opinion.get('overall_note'):
+                    lines.append(f"      {opinion['overall_note']}")
 
             if item.get('breadth_context'):
                 lines.append(f"    [Market] {item['breadth_context']}")
