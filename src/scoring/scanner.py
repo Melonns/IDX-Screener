@@ -5,7 +5,7 @@ Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
 - Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Auto-fetch seluruh pasar BEI (800+ saham lama & baru) jika DB di Replit belum lengkap.
+- Auto-sync seluruh 960+ saham aktif BEI secara REAL-TIME dari API resmi idx.co.id (termasuk IPO baru & eliminasi delisting).
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(_ROOT))
 from data.database import DatabaseManager
 from data.provider import YFinanceProvider
 from data.ingestion import compute_indicators
-from data.idx_universe import ALL_IDX_800_TICKERS
+from data.idx_universe import fetch_live_idx_tickers
 from scoring.observation_tags import evaluate_observation_tags, get_liquidity_note
 from scoring.rarity_context import get_rarity_context, get_condition_streak
 from scoring.market_breadth import get_market_breadth_context, get_sector_context
@@ -50,15 +50,15 @@ class TechnicalObservationScanner:
     ) -> List[Dict[str, Any]]:
         """
         Scan stock universe for stocks showing unusual technical activity relative to their own history.
-        Scans full 800+ IDX tickers if no specific ticker specified.
+        Automatically syncs real-time 960+ active BEI tickers directly from official idx.co.id API.
         If data is missing from local SQLite (e.g. freshly cloned Replit), automatically fetches from yfinance.
         """
         if tickers is None:
             db_tickers = self.db.get_tickers()
-            if len(db_tickers) >= 500:
+            if len(db_tickers) >= 800:
                 tickers = db_tickers
             else:
-                tickers = ALL_IDX_800_TICKERS
+                tickers = fetch_live_idx_tickers()
 
         scanned_results = []
         total_universe = len(tickers)
@@ -229,6 +229,6 @@ if __name__ == '__main__':
     db = DatabaseManager(db_path)
     scanner = TechnicalObservationScanner(db)
 
-    print("Running Enhanced Technical Observation Scanner across ALL 800+ Tickers...")
+    print("Running Enhanced Technical Observation Scanner across ALL 960+ Live BEI Tickers...")
     results = scanner.scan_unusual_activity(max_results=5)
     print(scanner.format_cli_report(results))

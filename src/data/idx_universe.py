@@ -1,9 +1,54 @@
 """
-idx_universe.py — Master List Universe Seluruh Saham BEI / IDX (800+ Saham)
+idx_universe.py — Dynamic Master List Universe Seluruh Saham BEI / IDX (900+ Saham)
 
-Menyediakan daftar komprehensif seluruh ticker saham yang terdaftar di Bursa Efek Indonesia (BEI).
-digunakan oleh TechnicalObservationScanner untuk memindai seluruh pasar bursa (lama & baru).
+Menyediakan:
+1. `fetch_live_idx_tickers()` : Mengambil daftar resmi 100% REAL-TIME seluruh saham aktif terdaftar
+                                 langsung dari API resmi Bursa Efek Indonesia (BEI / idx.co.id).
+                                 Otomatis menyertakan saham IPO terbaru & mengeliminasi saham delisting.
+2. `ALL_IDX_800_TICKERS`     : Backup offline universe 800+ saham jika koneksi ke BEI offline.
 """
+
+import requests
+from typing import List
+
+def fetch_live_idx_tickers() -> List[str]:
+    """
+    Fetch real-time active listed companies directly from official BEI / IDX API (idx.co.id).
+    Automatically includes newly listed IPO stocks and removes delisted stocks.
+    
+    Returns:
+        List[str]: List of ticker strings formatted like ['AADI.JK', 'AALI.JK', ...]
+    """
+    url = "https://www.idx.co.id/primary/ListedCompany/GetCompanyProfiles?draw=1&start=0&length=1500"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://www.idx.co.id/id/perusahaan-tercatat/profil-perusahaan-tercatat/'
+    }
+
+    try:
+        sess = requests.Session()
+        sess.get("https://www.idx.co.id/id/perusahaan-tercatat/profil-perusahaan-tercatat/", headers=headers, timeout=5)
+        resp = sess.get(url, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            payload = resp.json()
+            data_list = payload.get('data', [])
+            tickers = []
+            for item in data_list:
+                code = item.get('KodeEmiten', '').strip().upper()
+                is_saham = item.get('EfekEmiten_Saham', True)
+                if code and is_saham and len(code) == 4:
+                    tickers.append(f"{code}.JK")
+
+            if len(tickers) >= 500:
+                print(f"[IDX Universe] ✅ Berhasil sinkronisasi {len(tickers)} saham aktif real-time dari BEI (idx.co.id).")
+                return sorted(list(set(tickers)))
+    except Exception as err:
+        print(f"[IDX Universe] Warning: Gagal fetch live IDX list ({err}). Menggunakan offline backup list.")
+
+    return ALL_IDX_800_TICKERS
+
 
 ALL_IDX_800_TICKERS = [
     'AALI.JK', 'ABBA.JK', 'ABDA.JK', 'ABMM.JK', 'ACES.JK', 'ACST.JK', 'ADCP.JK', 'ADES.JK', 'ADMG.JK', 'ADRO.JK',

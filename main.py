@@ -3,8 +3,7 @@ main.py — Flask & Telegram Bot Server for IDX-Screener v3
 
 Fitur Telegram Bot v3:
 1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI dengan Async Background Worker (threading).
-   Flask merespons HTTP 200 OK secara instan (<200ms) ke Telegram untuk mencegah timeout,
-   sementara pemindaian & update pesan dilakukan di background thread.
+   Dilengkapi Safety Net (Anti-Spam Lock) agar user tidak bisa memicu multiple scan bersamaan.
 2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut (Async Worker).
 3. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
 4. /ping: Tes koneksi & latensi jaringan bot real-time.
@@ -47,6 +46,10 @@ db = DatabaseManager(db_path)
 scanner = TechnicalObservationScanner(db)
 div_tracker = DividendForwardTracker(db)
 
+# Safety Net Lock — Mencegah spam scan ganda per chat_id
+ACTIVE_SCANS = set()
+ACTIVE_SCANS_LOCK = threading.Lock()
+
 
 def send_telegram_message(chat_id: int, text: str) -> dict:
     if not TELEGRAM_BOT_TOKEN:
@@ -82,7 +85,7 @@ def get_help_message() -> str:
 📌 *Cara Penggunaan Telegram Bot:*
 
 1️⃣ */scan* (atau kirim tombol Scan):
-   Memindai seluruh pasar BEI & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan Async Worker anti-stuck).
+   Memindai seluruh pasar BEI & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan Async Worker + Anti-Spam Lock).
 
 2️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
    Melihat fakta observasi deskriptif (Volume percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
@@ -137,6 +140,9 @@ def _async_run_scan(chat_id: int, msg_id: int):
                 edit_telegram_message(chat_id, msg_id, err_msg)
             except Exception:
                 send_telegram_message(chat_id, err_msg)
+    finally:
+        with ACTIVE_SCANS_LOCK:
+            ACTIVE_SCANS.discard(chat_id)
 
 
 def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
@@ -185,6 +191,9 @@ def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
                 edit_telegram_message(chat_id, msg_id, err_msg)
             except Exception:
                 send_telegram_message(chat_id, err_msg)
+    finally:
+        with ACTIVE_SCANS_LOCK:
+            ACTIVE_SCANS.discard(chat_id)
 
 
 # ─── Flask Routes ─────────────────────────────────────────────────────────────
@@ -255,8 +264,21 @@ def telegram_webhook():
         send_telegram_message(chat_id, ping_msg)
         return jsonify({'ok': True})
 
+    # SAFETY NET CHECK — Mencegah spam scan ganda jika pemindaian sedang berjalan
+    with ACTIVE_SCANS_LOCK:
+        if chat_id in ACTIVE_SCANS:
+            send_telegram_message(
+                chat_id,
+                "⚠️ *Pemindaian sedang berjalan di background...*\n"
+                "_Mohon tunggu hasil pemindaian sebelumnya selesai sebelum mengirim perintah scan baru._"
+            )
+            return jsonify({'ok': True})
+
     # Handle /scan command (ASYNC BACKGROUND THREAD)
     if text_lower in ['/scan', 'scan', 'scan hari ini']:
+        with ACTIVE_SCANS_LOCK:
+            ACTIVE_SCANS.add(chat_id)
+
         send_chat_action(chat_id, 'typing')
         
         load_res = send_telegram_message(
@@ -266,7 +288,6 @@ def telegram_webhook():
         )
         msg_id = load_res.get('result', {}).get('message_id')
 
-        # Launch background thread so Flask returns HTTP 200 OK immediately
         threading.Thread(target=_async_run_scan, args=(chat_id, msg_id), daemon=True).start()
         return jsonify({'ok': True})
 
@@ -297,6 +318,9 @@ def telegram_webhook():
     if not tickers:
         send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan, /ping, /dividends, atau ketik kode saham (misal: `BBRI ASII`).')
         return jsonify({'ok': True})
+
+    with ACTIVE_SCANS_LOCK:
+        ACTIVE_SCANS.add(chat_id)
 
     send_chat_action(chat_id, 'typing')
     ticker_str = ", ".join([t.replace('.JK', '') for t in tickers])
