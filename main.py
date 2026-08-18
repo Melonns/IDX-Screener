@@ -15,6 +15,7 @@ CATATAN:
 """
 
 import io
+import traceback
 import json
 import os
 import re
@@ -139,25 +140,40 @@ def parse_tickers_from_text(text: str) -> list[str]:
 
 # ─── Async Workers (Anti-Timeout & Anti-Stuck) ───────────────────────────────
 
+def _send_long_message(chat_id: int, text: str, max_len: int = 4000):
+    """Kirim pesan panjang ke Telegram, potong jika melebihi batas 4096 karakter."""
+    if len(text) <= max_len:
+        send_telegram_message(chat_id, text)
+        return
+    # Potong dan kirim dalam dua bagian
+    send_telegram_message(chat_id, text[:max_len])
+    send_telegram_message(chat_id, "..." + text[max_len:max_len*2])
+
+
 def _async_run_scan(chat_id: int, msg_id: int):
     """Background worker untuk menjalankan scan tanpa menahan HTTP request Telegram."""
     try:
         send_chat_action(chat_id, 'typing')
         results = scanner.scan_unusual_activity(max_results=10)
-        report  = scanner.format_telegram_report(results)
+        print(f"[Scan] Selesai! {len(results)} saham unusual ditemukan.")
+        report = scanner.format_telegram_report(results)
+        print(f"[Scan] Report length: {len(report)} chars")
         
+        # Selalu kirim sebagai pesan BARU di bawah agar tidak pernah hilang
+        _send_long_message(chat_id, report)
+        
+        # Edit pesan loading lama menjadi ringkasan singkat
         if msg_id:
-            res = edit_telegram_message(chat_id, msg_id, report)
-            if not res.get('ok'):
-                send_telegram_message(chat_id, report)
-        else:
-            send_telegram_message(chat_id, report)
+            summary = f"✅ *Scan selesai!* {len(results)} saham unusual ditemukan. Lihat hasil di bawah ⬇️"
+            try:
+                edit_telegram_message(chat_id, msg_id, summary)
+            except Exception:
+                pass  # Tidak masalah kalau edit gagal, laporan sudah terkirim
     except Exception as err:
-        err_msg = f"❌ *Error saat pemindaian*: `{str(err)[:100]}`"
-        if msg_id:
-            edit_telegram_message(chat_id, msg_id, err_msg)
-        else:
-            send_telegram_message(chat_id, err_msg)
+        tb = traceback.format_exc()
+        print(f"[Scan] ❌ ERROR: {err}\n{tb}")
+        err_msg = f"❌ *Error saat pemindaian*:\n`{str(err)[:200]}`"
+        _send_long_message(chat_id, err_msg)
     finally:
         with ACTIVE_SCANS_LOCK:
             ACTIVE_SCANS.discard(chat_id)
@@ -191,24 +207,23 @@ def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
                     close_p  = float(last_row['Close'])
                     rsi_val  = float(last_row['rsi_14']) if 'rsi_14' in last_row and pd.notna(last_row['rsi_14']) else 'N/A'
                     rsi_str  = f"{rsi_val:.1f}" if isinstance(rsi_val, float) else rsi_val
-                    lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_str} — Tidak ada aktivitas di luar kebiasaan histori 60 hari hari ini.")
+                    lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_str} — Tidak ada aktivitas di luar kebiasaan hari ini.")
                 else:
                     lines.append(f"• **{t}**: Data tidak ditemukan.")
             lines.append(f"\n---\n{scanner.MANDATORY_DISCLAIMER if hasattr(scanner, 'MANDATORY_DISCLAIMER') else ''}")
             report = "\n".join(lines)
 
+        # Selalu kirim pesan baru + edit loading jadi ringkasan
+        _send_long_message(chat_id, report)
         if msg_id:
-            res = edit_telegram_message(chat_id, msg_id, report)
-            if not res.get('ok'):
-                send_telegram_message(chat_id, report)
-        else:
-            send_telegram_message(chat_id, report)
+            try:
+                edit_telegram_message(chat_id, msg_id, "✅ *Data observasi siap. Lihat hasil di bawah ⬇️*")
+            except Exception:
+                pass
     except Exception as err:
-        err_msg = f"❌ *Error saat query ticker*: `{str(err)[:100]}`"
-        if msg_id:
-            edit_telegram_message(chat_id, msg_id, err_msg)
-        else:
-            send_telegram_message(chat_id, err_msg)
+        tb = traceback.format_exc()
+        print(f"[Ticker Query] ❌ ERROR: {err}\n{tb}")
+        _send_long_message(chat_id, f"❌ *Error saat query ticker*: `{str(err)[:200]}`")
     finally:
         with ACTIVE_SCANS_LOCK:
             ACTIVE_SCANS.discard(chat_id)
