@@ -2,10 +2,10 @@
 main.py — Flask & Telegram Bot Server for IDX-Screener v3
 
 Fitur Telegram Bot v3:
-1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI (800+ saham) & tampilkan 5-15 saham
-   beraktivitas di luar kebiasaan (Unusual Activity) dengan fakta deskriptif + Rarity + Market Breadth + Sector Context.
-   Dilengkapi pesan loading interaktif (editMessageText & typing indicator).
-2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut.
+1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI dengan Async Background Worker (threading).
+   Flask merespons HTTP 200 OK secara instan (<200ms) ke Telegram untuk mencegah timeout,
+   sementara pemindaian & update pesan dilakukan di background thread.
+2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut (Async Worker).
 3. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
 4. /ping: Tes koneksi & latensi jaringan bot real-time.
 
@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+import threading
 from pathlib import Path
 import pandas as pd
 import requests
@@ -81,7 +82,7 @@ def get_help_message() -> str:
 📌 *Cara Penggunaan Telegram Bot:*
 
 1️⃣ */scan* (atau kirim tombol Scan):
-   Memindai seluruh pasar BEI (800+ saham) & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan indicator loading interaktif).
+   Memindai seluruh pasar BEI & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan Async Worker anti-stuck).
 
 2️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
    Melihat fakta observasi deskriptif (Volume percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
@@ -112,6 +113,81 @@ def parse_tickers_from_text(text: str) -> list[str]:
             tickers.append(token)
     return list(dict.fromkeys(tickers))
 
+
+# ─── Async Workers (Anti-Timeout & Anti-Stuck) ───────────────────────────────
+
+def _async_run_scan(chat_id: int, msg_id: int):
+    """Background worker untuk menjalankan scan tanpa menahan HTTP request Telegram."""
+    try:
+        send_chat_action(chat_id, 'typing')
+        results = scanner.scan_unusual_activity(max_results=10)
+        report  = scanner.format_telegram_report(results)
+        
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, report)
+            except Exception:
+                send_telegram_message(chat_id, report)
+        else:
+            send_telegram_message(chat_id, report)
+    except Exception as err:
+        err_msg = f"❌ *Error saat pemindaian*: `{str(err)[:100]}`"
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, err_msg)
+            except Exception:
+                send_telegram_message(chat_id, err_msg)
+
+
+def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
+    """Background worker untuk query ticker khusus tanpa menahan HTTP request Telegram."""
+    try:
+        send_chat_action(chat_id, 'typing')
+        results = scanner.scan_unusual_activity(tickers=tickers, max_results=len(tickers))
+        
+        if results:
+            report = scanner.format_telegram_report(results)
+        else:
+            lines = [f"📋 **Fakta Observasi Teknikal ({tickers[0].replace('.JK','')})**\n"]
+            for t in tickers:
+                t_clean = t if t.endswith('.JK') else f"{t}.JK"
+                df = db.get_prices_with_indicators(t_clean)
+                if df.empty or len(df) < 60:
+                    try:
+                        df_p = scanner.provider.get_or_fetch(t_clean, period_days=252*2)
+                        if not df_p.empty:
+                            df_ind = compute_indicators(df_p)
+                            db.save_indicators(t_clean, df_ind)
+                            df = db.get_prices_with_indicators(t_clean)
+                    except Exception:
+                        pass
+
+                if not df.empty:
+                    last_row = df.iloc[-1]
+                    close_p  = float(last_row['Close'])
+                    rsi_val  = float(last_row['rsi_14']) if 'rsi_14' in last_row and pd.notna(last_row['rsi_14']) else 'N/A'
+                    rsi_str  = f"{rsi_val:.1f}" if isinstance(rsi_val, float) else rsi_val
+                    lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_str} — Tidak ada aktivitas di luar kebiasaan histori 60 hari hari ini.")
+                else:
+                    lines.append(f"• **{t}**: Data tidak ditemukan.")
+            lines.append(f"\n---\n{scanner.MANDATORY_DISCLAIMER if hasattr(scanner, 'MANDATORY_DISCLAIMER') else ''}")
+            report = "\n".join(lines)
+
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, report)
+            except Exception:
+                send_telegram_message(chat_id, report)
+    except Exception as err:
+        err_msg = f"❌ *Error saat query ticker*: `{str(err)[:100]}`"
+        if msg_id:
+            try:
+                edit_telegram_message(chat_id, msg_id, err_msg)
+            except Exception:
+                send_telegram_message(chat_id, err_msg)
+
+
+# ─── Flask Routes ─────────────────────────────────────────────────────────────
 
 @app.route('/')
 def status():
@@ -163,7 +239,6 @@ def telegram_webhook():
         send_chat_action(chat_id, 'typing')
         latency_ms = int((time.time() - t_start) * 1000)
         
-        # Check SQLite DB connection
         try:
             db_tickers_count = len(db.get_tickers())
             db_status_str = f"Normal ({db_tickers_count} saham di-cache)"
@@ -180,44 +255,25 @@ def telegram_webhook():
         send_telegram_message(chat_id, ping_msg)
         return jsonify({'ok': True})
 
-    # Handle /scan command with INTERACTIVE LOADING MESSAGE
+    # Handle /scan command (ASYNC BACKGROUND THREAD)
     if text_lower in ['/scan', 'scan', 'scan hari ini']:
         send_chat_action(chat_id, 'typing')
         
-        # 1. Send loading message
         load_res = send_telegram_message(
             chat_id,
-            "⏳ *Sedang memindai seluruh saham pasar BEI (800+ saham)...*\n"
-            "_Proses ini mengunduh & mengevaluasi fakta 60-hari. Harap tunggu beberapa detik._"
+            "⏳ *Sedang memindai seluruh saham pasar BEI...*\n"
+            "_Pemindaian berjalan di background. Hasil akan otomatis diperbarui di sini begitu selesai._"
         )
         msg_id = load_res.get('result', {}).get('message_id')
 
-        # 2. Run scan
-        send_chat_action(chat_id, 'typing')
-        results = scanner.scan_unusual_activity(max_results=10)
-        report  = scanner.format_telegram_report(results)
-
-        # 3. Edit loading message into final report if message_id exists, else send new
-        if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, report)
-            except Exception:
-                send_telegram_message(chat_id, report)
-        else:
-            send_telegram_message(chat_id, report)
-
+        # Launch background thread so Flask returns HTTP 200 OK immediately
+        threading.Thread(target=_async_run_scan, args=(chat_id, msg_id), daemon=True).start()
         return jsonify({'ok': True})
 
-    # Handle /dividends command with INTERACTIVE LOADING MESSAGE
+    # Handle /dividends command
     if text_lower in ['/dividends', 'dividend', 'dividen']:
         send_chat_action(chat_id, 'typing')
         
-        load_res = send_telegram_message(
-            chat_id,
-            "⏳ *Sedang memuat data sinyal Dividend Cum-Date Drift (V3_LOCKED)...*"
-        )
-        msg_id = load_res.get('result', {}).get('message_id')
-
         df_act = div_tracker.scan_upcoming_signals()
         if not df_act.empty:
             active_list = []
@@ -233,17 +289,10 @@ def telegram_webhook():
         else:
             msg = "💰 *Dividend Cum-Date Drift Tracker*\n\nSaat ini tidak ada event dividen qualified (Yield >= 4.0%) yang masuk periode entry."
 
-        if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, msg)
-            except Exception:
-                send_telegram_message(chat_id, msg)
-        else:
-            send_telegram_message(chat_id, msg)
-
+        send_telegram_message(chat_id, msg)
         return jsonify({'ok': True})
 
-    # Handle specific Tickers input (e.g. ASII BBCA) with INTERACTIVE LOADING MESSAGE
+    # Handle specific Tickers input (ASYNC BACKGROUND THREAD)
     tickers = parse_tickers_from_text(text)
     if not tickers:
         send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan, /ping, /dividends, atau ketik kode saham (misal: `BBRI ASII`).')
@@ -257,45 +306,7 @@ def telegram_webhook():
     )
     msg_id = load_res.get('result', {}).get('message_id')
 
-    results = scanner.scan_unusual_activity(tickers=tickers, max_results=len(tickers))
-    
-    if results:
-        report = scanner.format_telegram_report(results)
-    else:
-        # If tickers have no unusual activity today, display basic status & auto-fetch if needed
-        lines = [f"📋 **Fakta Observasi Teknikal ({tickers[0].replace('.JK','')})**\n"]
-        for t in tickers:
-            t_clean = t if t.endswith('.JK') else f"{t}.JK"
-            df = db.get_prices_with_indicators(t_clean)
-            if df.empty or len(df) < 60:
-                try:
-                    df_p = scanner.provider.get_or_fetch(t_clean, period_days=252*2)
-                    if not df_p.empty:
-                        df_ind = compute_indicators(df_p)
-                        db.save_indicators(t_clean, df_ind)
-                        df = db.get_prices_with_indicators(t_clean)
-                except Exception:
-                    pass
-
-            if not df.empty:
-                last_row = df.iloc[-1]
-                close_p  = float(last_row['Close'])
-                rsi_val  = float(last_row['rsi_14']) if 'rsi_14' in last_row and pd.notna(last_row['rsi_14']) else 'N/A'
-                rsi_str  = f"{rsi_val:.1f}" if isinstance(rsi_val, float) else rsi_val
-                lines.append(f"• **{t.replace('.JK', '')}** (Rp {close_p:,.0f}): RSI 14 = {rsi_str} — Tidak ada aktivitas di luar kebiasaan histori 60 hari hari ini.")
-            else:
-                lines.append(f"• **{t}**: Data tidak ditemukan (gagal fetch).")
-        lines.append(f"\n---\n{scanner.MANDATORY_DISCLAIMER if hasattr(scanner, 'MANDATORY_DISCLAIMER') else ''}")
-        report = "\n".join(lines)
-
-    if msg_id:
-        try:
-            edit_telegram_message(chat_id, msg_id, report)
-        except Exception:
-            send_telegram_message(chat_id, report)
-    else:
-        send_telegram_message(chat_id, report)
-
+    threading.Thread(target=_async_run_ticker_query, args=(chat_id, msg_id, tickers), daemon=True).start()
     return jsonify({'ok': True})
 
 
