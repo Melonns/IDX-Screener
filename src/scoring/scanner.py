@@ -10,7 +10,7 @@ Prinsip Utama:
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
-import os, sys, time, threading
+import os, sys, time, threading, re
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -370,47 +370,137 @@ class TechnicalObservationScanner:
 
         return results
 
+    def _compact_tag_line(self, tag: Dict[str, Any]) -> str:
+        """Convert a verbose tag into a single compact line."""
+        tag_id = tag.get('tag_id', '')
+        desc = tag.get('description', '')
+        rarity = tag.get('rarity_text', '')
+
+        # Extract streak from description (appended as "(berlangsung N hari berturut-turut)")
+        streak = ''
+        if 'berlangsung' in desc and 'hari berturut' in desc:
+            m = re.search(r'berlangsung (\d+) hari', desc)
+            if m:
+                streak = f", {m.group(1)}h"
+
+        # Extract rarity count (simplified)
+        rarity_short = ''
+        if rarity:
+            m = re.search(r'(\d+)x dalam 12 bulan', rarity)
+            if m:
+                rarity_short = f", {m.group(1)}x/tahun"
+
+        # Build compact line based on tag type
+        if tag_id == 'VOLUME_SPIKE':
+            m = re.search(r'(\d+\.?\d*)x.*persentil (\d+)', desc) if desc else None
+            val = f"{m.group(1)}x" if m else ''
+            pct = f"p{m.group(2)}" if m else ''
+            return f"Volume {val} ({pct}{streak}{rarity_short})"
+
+        elif tag_id == 'RSI_14' or 'RSI' in tag_id:
+            m = re.search(r'(\d+\.?\d*).*persentil (\d+)', desc) if desc else None
+            val = m.group(1) if m else ''
+            pct = f"p{m.group(2)}" if m else ''
+            return f"RSI {val} ({pct}{streak}{rarity_short})"
+
+        elif tag_id == 'RESISTANCE_BREAKOUT':
+            return f"Breakout 20h{streak}{rarity_short}"
+
+        elif tag_id == 'SUPPORT_BREAKDOWN':
+            return f"Breakdown 20h{streak}{rarity_short}"
+
+        elif tag_id == 'BB_SQUEEZE':
+            m = re.search(r'persentil (\d+)', desc) if desc else None
+            pct = f"p{m.group(1)}" if m else ''
+            return f"BB Squeeze ({pct}{streak}{rarity_short})"
+
+        elif tag_id == 'MACD_BULLISH_CROSS':
+            return f"MACD Bullish Cross{streak}{rarity_short}"
+
+        elif tag_id == 'MACD_BEARISH_CROSS':
+            return f"MACD Bearish Cross{streak}{rarity_short}"
+
+        elif tag_id == 'EMA50_FAR_ABOVE':
+            m = re.search(r'(\+?\d+\.?\d*)%', desc) if desc else None
+            val = m.group(1) if m else ''
+            return f"Harga {val}% dari EMA50{streak}{rarity_short}"
+
+        elif tag_id == 'EMA50_FAR_BELOW':
+            m = re.search(r'(\-?\d+\.?\d*)%', desc) if desc else None
+            val = m.group(1) if m else ''
+            return f"Harga {val}% dari EMA50{streak}{rarity_short}"
+
+        elif tag_id == 'ATR_EXPANSION':
+            m = re.search(r'(\d+\.?\d*)x', desc) if desc else None
+            val = f"{m.group(1)}x" if m else ''
+            return f"ATR {val}{streak}{rarity_short}"
+
+        elif tag_id == 'GAP_UP':
+            m = re.search(r'(\+?\d+\.?\d*)%\s*dari', desc) if desc else None
+            val = m.group(1) if m else ''
+            return f"Gap Up {val}%{rarity_short}"
+
+        elif tag_id == 'GAP_DOWN':
+            m = re.search(r'(\-?\d+\.?\d*)%\s*dari', desc) if desc else None
+            val = m.group(1) if m else ''
+            return f"Gap Down {val}%{rarity_short}"
+
+        elif tag_id == 'TREND_ALIGNMENT_UP':
+            return "Tren Naik (EMA aligned)"
+
+        elif tag_id == 'TREND_ALIGNMENT_DOWN':
+            return "Tren Turun (EMA aligned)"
+
+        else:
+            # Fallback: truncate description
+            return desc[:60] + ('...' if len(desc) > 60 else '')
+
     def format_telegram_report(self, scanned_results: List[Dict[str, Any]], as_of_date: Optional[str] = None) -> str:
         """
-        Format scan results into clean, descriptive Telegram markdown message.
-        Includes observation opinions for each stock.
+        Format scan results — COMPACT & CLEAN format.
+        One line per tag, rarity inline, no nested sub-lines.
         """
         if not scanned_results:
-            return f"📋 **Scan Aktivitas Harian**\n\nTidak ditemukan saham dengan aktivitas di luar kebiasaan harian.\n\n{MANDATORY_DISCLAIMER}"
+            return f"📋 Scan Aktivitas Harian\n\nTidak ditemukan saham dengan aktivitas di luar kebiasaan harian.\n\n{MANDATORY_DISCLAIMER}"
 
         date_hdr = as_of_date or scanned_results[0]['date']
         lines = [
-            f"📋 **Scan Observasi Teknikal Harian ({date_hdr})**",
-            f"_{len(scanned_results)} saham dengan aktivitas di luar kebiasaan histori 60 hari_\n"
+            f"📋 *Scan Observasi Harian ({date_hdr})*",
+            f"_{len(scanned_results)} saham unusual_\n"
         ]
 
         for i, item in enumerate(scanned_results, 1):
             ticker = item['ticker'].replace('.JK', '')
             close  = item['close']
-            liq    = item['liquidity_note']
-            lines.append(f"**{i}. {ticker}** (Rp {close:,.0f}) — _{liq}_")
 
-            # Observation tags
+            # Header line: ticker, price, liquidity (abbreviated)
+            liq_raw = item['liquidity_note']
+            liq_short = "likuid" if "tergolong likuid" in liq_raw else (
+                f"turnover {float(item.get('turnover_5d', 0) or 0)/1e9:.1f}M/h" if item.get('turnover_5d') else "N/A"
+            )
+            lines.append(f"*{i}. {ticker}* Rp {close:,.0f} — {liq_short}")
+
+            # Tags: unusual = ⚡, normal = ·  (one line each, no nesting)
             for tag in item['all_tags']:
-                icon = "🔥" if tag.get('is_unusual') else "•"
-                lines.append(f"   {icon} {tag['description']}")
-                if tag.get('rarity_text'):
-                    lines.append(f"      └─ {tag['rarity_text']}")
+                if tag.get('is_unusual'):
+                    compact = self._compact_tag_line(tag)
+                    lines.append(f"  ⚡ {compact}")
 
-            # Observation opinion (if available)
+            # Opinion (concise)
             opinion = item.get('opinion')
             if opinion and opinion.get('bullets'):
-                lines.append(f"\n   💡 *Opini Observasi:*")
-                for bullet in opinion['bullets']:
-                    lines.append(f"   • {bullet}")
-                if opinion.get('overall_note'):
-                    lines.append(f"   _{opinion['overall_note']}_")
-                lines.append("")
+                for b in opinion['bullets']:
+                    lines.append(f"  💡 {b}")
 
+            # Market breadth (short)
             if item.get('breadth_context'):
-                lines.append(f"   🌐 {item['breadth_context']}")
-            if item.get('sector_context'):
-                lines.append(f"   🏢 {item['sector_context']}")
+                bc = item['breadth_context']
+                # Simplify: "Konteks pasar: 8 dari 472 saham..." → "8/472 saham ..."
+                m = re.search(r'(\d+) dari (\d+) saham(.+?)mengalami (.+?) hari ini \((.+?)\)', bc)
+                if m:
+                    lines.append(f"  🌐 {m.group(1)}/{m.group(2)} {m.group(4)} ({m.group(5)})")
+                else:
+                    lines.append(f"  🌐 {bc}")
 
             lines.append("")
 
@@ -419,49 +509,45 @@ class TechnicalObservationScanner:
 
     def format_cli_report(self, scanned_results: List[Dict[str, Any]], as_of_date: Optional[str] = None) -> str:
         """
-        Format scan results for CLI output. Includes observation opinions.
+        Format scan results for CLI — compact format.
         """
         if not scanned_results:
-            return "Tidak ditemukan saham meyakinkan dengan aktivitas teknikal di luar kebiasaan."
+            return "Tidak ditemukan saham dengan aktivitas teknikal di luar kebiasaan."
 
         date_hdr = as_of_date or scanned_results[0]['date']
         lines = [
-            "="*70,
-            f"  SCAN OBSERVASI TEKNIKAL HARIAN — {date_hdr}",
-            "  (Daftar Saham Beraktivitas di Luar Kebiasaan Histori 60-Hari)",
-            "="*70
+            "="*60,
+            f"  SCAN HARIAN — {date_hdr}",
+            "="*60
         ]
 
         for i, item in enumerate(scanned_results, 1):
-            ticker = item['ticker']
+            ticker = item['ticker'].replace('.JK', '')
             close  = item['close']
-            lines.append(f"\n  {i:2d}. {ticker:<10} Rp {close:,.0f} ({item['unusual_count']} kondisi unusual)")
-            lines.append(f"      [{item['liquidity_note']}]")
+            lines.append(f"\n  {i}. {ticker} Rp {close:,.0f}")
 
+            # Unusual tags only, compact
             for tag in item['all_tags']:
-                prefix = "    [!] " if tag.get('is_unusual') else "    [-] "
-                lines.append(f"{prefix}{tag['description']}")
-                if tag.get('rarity_text'):
-                    lines.append(f"        └─ {tag['rarity_text']}")
+                if tag.get('is_unusual'):
+                    compact = self._compact_tag_line(tag)
+                    lines.append(f"     ⚡ {compact}")
 
-            # Observation opinion
+            # Opinion
             opinion = item.get('opinion')
             if opinion and opinion.get('bullets'):
-                lines.append(f"\n    💡 OPINI OBSERVASI [{opinion.get('attention_level', '?')}]:")
-                for bullet in opinion['bullets']:
-                    lines.append(f"      • {bullet}")
-                if opinion.get('overall_note'):
-                    lines.append(f"      {opinion['overall_note']}")
+                for b in opinion['bullets']:
+                    lines.append(f"     💡 {b}")
 
+            # Breadth
             if item.get('breadth_context'):
-                lines.append(f"    [Market] {item['breadth_context']}")
-            if item.get('sector_context'):
-                lines.append(f"    [Sector] {item['sector_context']}")
+                bc = item['breadth_context']
+                m = re.search(r'(\d+) dari (\d+) saham(.+?)mengalami (.+?) hari ini \((.+?)\)', bc)
+                if m:
+                    lines.append(f"     🌐 {m.group(1)}/{m.group(2)} {m.group(4)} ({m.group(5)})")
 
-        lines.append("\n" + "="*70)
-        lines.append("  PERINGATAN WAJIB:")
+        lines.append("\n" + "="*60)
         lines.append(f"  {MANDATORY_DISCLAIMER.replace(chr(10), chr(10) + '  ')}")
-        lines.append("="*70)
+        lines.append("="*60)
         return "\n".join(lines)
 
 
