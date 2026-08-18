@@ -4,8 +4,7 @@ scanner.py — Daily Technical Observation Scanner (Descriptive, Non-Predictive)
 Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
-- Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Auto-sync seluruh 960+ saham aktif BEI secara REAL-TIME dari API resmi idx.co.id.
+- Cache-First & Capped Batch Fetch (Mencegah Gunicorn Timeout & menjaga scan selesai <15 detik).
 - Thread-safe Progress Tracking untuk fitur /status & /progress Telegram.
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
@@ -24,7 +23,7 @@ sys.path.insert(0, str(_ROOT))
 from data.database import DatabaseManager
 from data.provider import YFinanceProvider
 from data.ingestion import compute_indicators
-from data.idx_universe import fetch_live_idx_tickers
+from data.idx_universe import fetch_live_idx_tickers, ALL_IDX_800_TICKERS
 from scoring.observation_tags import evaluate_observation_tags, get_liquidity_note
 from scoring.rarity_context import get_rarity_context, get_condition_streak
 from scoring.market_breadth import get_market_breadth_context, get_sector_context
@@ -78,18 +77,20 @@ class TechnicalObservationScanner:
         tickers: Optional[List[str]] = None,
         as_of_date: Optional[str] = None,
         lookback_days: int = 60,
-        max_results: int = 15
+        max_results: int = 15,
+        max_new_fetches_per_run: int = 25
     ) -> List[Dict[str, Any]]:
         """
         Scan stock universe for stocks showing unusual technical activity relative to their own history.
-        Tracks live progress in self.progress_data.
+        Uses Cache-First Strategy with a safety cap on new yfinance fetches to prevent Gunicorn timeouts.
         """
         if tickers is None:
             db_tickers = self.db.get_tickers()
-            if len(db_tickers) >= 800:
-                tickers = db_tickers
-            else:
-                tickers = fetch_live_idx_tickers()
+            master_universe = fetch_live_idx_tickers()
+            
+            # Combine cached tickers with master universe list
+            combined = list(dict.fromkeys(db_tickers + master_universe))
+            tickers = combined
 
         total_universe = len(tickers)
 
@@ -102,6 +103,7 @@ class TechnicalObservationScanner:
             self.progress_data['start_time'] = time.time()
 
         scanned_results = []
+        new_fetches_count = 0
 
         try:
             for ticker in tickers:
@@ -116,10 +118,15 @@ class TechnicalObservationScanner:
                 # 1. Load from DB
                 df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
 
-                # 2. Auto-fetch fallback if DB is empty / missing rows
+                # 2. Auto-fetch fallback if DB is empty / missing rows (Capped per run)
                 if df.empty or len(df) < lookback_days:
+                    if new_fetches_count >= max_new_fetches_per_run:
+                        # Skip additional new downloads in this run to avoid Gunicorn timeout
+                        continue
+
                     try:
                         df_prices = self.provider.get_or_fetch(ticker_clean, period_days=252*2)
+                        new_fetches_count += 1
                         if not df_prices.empty:
                             df_ind = compute_indicators(df_prices)
                             self.db.save_indicators(ticker_clean, df_ind)
@@ -280,6 +287,6 @@ if __name__ == '__main__':
     db = DatabaseManager(db_path)
     scanner = TechnicalObservationScanner(db)
 
-    print("Running Enhanced Technical Observation Scanner across ALL 960+ Live BEI Tickers...")
+    print("Running Enhanced Technical Observation Scanner across ALL Live BEI Tickers...")
     results = scanner.scan_unusual_activity(max_results=5)
     print(scanner.format_cli_report(results))
