@@ -6,6 +6,22 @@ Prinsip Utama:
 - Menggunakan ambang batas RELATIF terhadap histori 60 hari saham itu sendiri (persentil),
   bukan threshold absolut tunggal yang sama untuk semua saham.
 - Menghindari kata "BULLISH", "BEARISH", "BUY", "SELL", atau skor 0-100.
+
+Tags (10 total):
+1. VOLUME_SPIKE        — Volume ratio >= persentil 90 dari 60 hari
+2. TREND_ALIGNMENT_UP/DOWN — EMA9/21/50 alignment
+3. RESISTANCE_BREAKOUT — Close > tertinggi 20 hari
+4. SUPPORT_BREAKDOWN   — Close < terendah 20 hari
+5. HIGH_RSI_RELATIVE   — RSI >= persentil 90 dari 60 hari
+6. LOW_RSI_RELATIVE    — RSI <= persentil 10 dari 60 hari
+7. BB_SQUEEZE          — BB width <= persentil 10 dari 60 hari
+8. MACD_BULLISH_CROSS  — MACD cross above signal (fresh, <=3 hari)
+9. MACD_BEARISH_CROSS  — MACD cross below signal (fresh, <=3 hari)
+10. EMA50_FAR_ABOVE    — Close > 5% di atas EMA50
+11. EMA50_FAR_BELOW    — Close < 5% di bawah EMA50
+12. ATR_EXPANSION      — ATR naik >= 50% dari rata-rata 20 hari (volatilitas spike)
+13. GAP_UP             — Open > High前一天 (gap up signifikan)
+14. GAP_DOWN           — Open < Low前一天 (gap down signifikan)
 """
 
 import pandas as pd
@@ -20,7 +36,7 @@ def get_liquidity_note(turnover_5d: float | None) -> str:
     """
     if pd.isna(turnover_5d) or turnover_5d is None or turnover_5d <= 0:
         return "Turnover 5D: N/A"
-    
+
     val_miliar = turnover_5d / 1_000_000_000.0
     if val_miliar >= 10.0:
         return f"Turnover 5D: Rp {val_miliar:.1f}M/hari (tergolong likuid)"
@@ -45,7 +61,7 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
 
     tags = []
 
-    # 1. VOLUME SPIKE (Volume Ratio 5D vs 60D history)
+    # ── 1. VOLUME SPIKE (Volume Ratio vs 60D history) ──────────────────────────
     if 'volume_ratio_20d' in df_hist.columns and pd.notna(latest['volume_ratio_20d']):
         rvol_series = df_hist['volume_ratio_20d'].dropna()
         if len(rvol_series) > 10:
@@ -58,7 +74,7 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
                     'is_unusual': True
                 })
 
-    # 2. TREND ALIGNMENT (EMA9, EMA21, EMA50)
+    # ── 2. TREND ALIGNMENT (EMA9, EMA21, EMA50) ───────────────────────────────
     ema9  = latest.get('ema_9')
     ema21 = latest.get('ema_21')
     ema50 = latest.get('ema_50')
@@ -77,7 +93,7 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
                 'is_unusual': False
             })
 
-    # 3. RESISTANCE & SUPPORT BREAKOUT / BREAKDOWN (20-day high/low)
+    # ── 3. RESISTANCE & SUPPORT BREAKOUT / BREAKDOWN (20-day high/low) ─────────
     if len(df_hist) >= 20:
         high_20 = float(df_hist['High'].iloc[-21:-1].max()) if 'High' in df_hist.columns else None
         low_20  = float(df_hist['Low'].iloc[-21:-1].min())  if 'Low' in df_hist.columns  else None
@@ -96,7 +112,7 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
                 'is_unusual': True
             })
 
-    # 4. RSI EXTREME RELATIVE TO STOCK'S OWN HISTORY
+    # ── 4. RSI EXTREME RELATIVE TO STOCK'S OWN HISTORY ─────────────────────────
     if 'rsi_14' in df_hist.columns and pd.notna(latest['rsi_14']):
         rsi_series = df_hist['rsi_14'].dropna()
         if len(rsi_series) > 10:
@@ -115,7 +131,7 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
                     'is_unusual': True
                 })
 
-    # 5. BOLLINGER BAND SQUEEZE (Volatility contraction relative to own history)
+    # ── 5. BOLLINGER BAND SQUEEZE (Volatility contraction) ─────────────────────
     if 'bb_width' in df_hist.columns and pd.notna(latest['bb_width']):
         bbw_series = df_hist['bb_width'].dropna()
         if len(bbw_series) > 10:
@@ -125,6 +141,96 @@ def evaluate_observation_tags(df_stock: pd.DataFrame, lookback_days: int = 60) -
                 tags.append({
                     'tag_id': 'BB_SQUEEZE',
                     'description': f"Bollinger Band: Menyempit (width persentil {bbw_pct:.0f} dari 60 hari — volatilitas rendah, arah tidak diketahui)",
+                    'is_unusual': True
+                })
+
+    # ── 6. MACD CROSS (Fresh momentum shift) ──────────────────────────────────
+    if 'macd' in df_hist.columns and 'macd_signal' in df_hist.columns:
+        macd_val = latest.get('macd')
+        signal_val = latest.get('macd_signal')
+        if pd.notna(macd_val) and pd.notna(signal_val) and len(df_hist) >= 3:
+            # Check for recent cross (within last 3 days)
+            for lookback in range(1, 4):
+                if len(df_hist) > lookback:
+                    prev = df_hist.iloc[-(lookback + 1)]
+                    prev_macd = prev.get('macd')
+                    prev_signal = prev.get('macd_signal')
+                    if pd.notna(prev_macd) and pd.notna(prev_signal):
+                        # Bullish cross: MACD was below signal, now above
+                        if prev_macd <= prev_signal and macd_val > signal_val:
+                            tags.append({
+                                'tag_id': 'MACD_BULLISH_CROSS',
+                                'description': f"MACD: Cross bullish ({lookback} hari lalu, MACD {macd_val:.2f} > Signal {signal_val:.2f})",
+                                'is_unusual': True
+                            })
+                            break
+                        # Bearish cross: MACD was above signal, now below
+                        elif prev_macd >= prev_signal and macd_val < signal_val:
+                            tags.append({
+                                'tag_id': 'MACD_BEARISH_CROSS',
+                                'description': f"MACD: Cross bearish ({lookback} hari lalu, MACD {macd_val:.2f} < Signal {signal_val:.2f})",
+                                'is_unusual': True
+                            })
+                            break
+
+    # ── 7. EMA50 DISTANCE (Far above/below long-term trend) ────────────────────
+    if pd.notna(ema50) and ema50 > 0:
+        close_val = float(latest['Close'])
+        pct_from_ema50 = ((close_val - ema50) / ema50) * 100.0
+
+        if pct_from_ema50 > 5.0:
+            tags.append({
+                'tag_id': 'EMA50_FAR_ABOVE',
+                'description': f"Harga: {pct_from_ema50:+.1f}% di atas EMA50 ({ema50:,.0f}) — sudah jauh dari tren jangka panjang",
+                'is_unusual': True
+            })
+        elif pct_from_ema50 < -5.0:
+            tags.append({
+                'tag_id': 'EMA50_FAR_BELOW',
+                'description': f"Harga: {pct_from_ema50:+.1f}% di bawah EMA50 ({ema50:,.0f}) — sudah jauh dari tren jangka panjang",
+                'is_unusual': True
+            })
+
+    # ── 8. ATR EXPANSION (Volatility spike) ───────────────────────────────────
+    if 'atr_14' in df_hist.columns and pd.notna(latest['atr_14']):
+        atr_series = df_hist['atr_14'].dropna()
+        if len(atr_series) >= 20:
+            current_atr = float(latest['atr_14'])
+            avg_atr_20 = float(atr_series.iloc[-20:].mean())
+            if avg_atr_20 > 0:
+                atr_ratio = current_atr / avg_atr_20
+                if atr_ratio >= 1.5:
+                    tags.append({
+                        'tag_id': 'ATR_EXPANSION',
+                        'description': f"ATR: {atr_ratio:.1f}x rata-rata 20 hari (volatilitas meningkat signifikan)",
+                        'is_unusual': True
+                    })
+
+    # ── 9. GAP UP / GAP DOWN ──────────────────────────────────────────────────
+    if len(df_hist) >= 2:
+        prev_bar = df_hist.iloc[-2]
+        today_open = float(latest['Open'])
+        prev_high = float(prev_bar['High'])
+        prev_low  = float(prev_bar['Low'])
+        prev_close = float(prev_bar['Close'])
+
+        # Gap Up: Open today > High yesterday (gap yang signifikan)
+        if prev_high > 0:
+            gap_up_pct = ((today_open - prev_high) / prev_high) * 100.0
+            if gap_up_pct >= 1.0:
+                tags.append({
+                    'tag_id': 'GAP_UP',
+                    'description': f"Gap Up: {gap_up_pct:+.1f}% dari penutupan kemarin",
+                    'is_unusual': True
+                })
+
+        # Gap Down: Open today < Low yesterday
+        if prev_low > 0:
+            gap_down_pct = ((today_open - prev_low) / prev_low) * 100.0
+            if gap_down_pct <= -1.0:
+                tags.append({
+                    'tag_id': 'GAP_DOWN',
+                    'description': f"Gap Down: {gap_down_pct:+.1f}% dari terendah kemarin",
                     'is_unusual': True
                 })
 

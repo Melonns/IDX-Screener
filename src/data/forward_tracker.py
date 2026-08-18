@@ -60,10 +60,11 @@ class DividendForwardTracker:
                 ORDER BY date ASC
             """, conn)
 
-            # 2. Fetch prices unadjusted
+            # 2. Fetch prices (adjusted — works for turnover calculation)
             prices = pd.read_sql_query("""
                 SELECT ticker, date, close, volume
-                FROM prices_unadj
+                FROM daily_prices
+                WHERE is_valid = 1
                 ORDER BY ticker, date ASC
             """, conn)
 

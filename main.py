@@ -60,14 +60,21 @@ def send_telegram_message(chat_id: int, text: str) -> dict:
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     resp = requests.post(url, json=payload, timeout=15)
     res_json = resp.json()
-    
+
     # Fallback to plain text if Telegram rejects Markdown formatting (e.g. unescaped underscores)
     if not res_json.get('ok'):
         payload.pop('parse_mode', None)
         resp = requests.post(url, json=payload, timeout=15)
         res_json = resp.json()
-        
+
     return res_json
+
+
+def escape_markdown_v1(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV1."""
+    # Characters that need escaping in MarkdownV1: _ * ` [
+    # But we use these intentionally, so only escape in dynamic content
+    return text.replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
 
 
 def edit_telegram_message(chat_id: int, message_id: int, text: str) -> dict:
@@ -144,14 +151,32 @@ PRELOAD_LOCK    = threading.Lock()
 
 # ─── Async Workers (Anti-Timeout & Anti-Stuck) ───────────────────────────────
 
-def _send_long_message(chat_id: int, text: str, max_len: int = 4000):
-    """Kirim pesan panjang ke Telegram, potong jika melebihi batas 4096 karakter."""
+def _split_long_message(text: str, max_len: int = 4000) -> list[str]:
+    """Split long message at line boundaries to preserve Markdown formatting."""
     if len(text) <= max_len:
-        send_telegram_message(chat_id, text)
-        return
-    # Potong dan kirim dalam dua bagian
-    send_telegram_message(chat_id, text[:max_len])
-    send_telegram_message(chat_id, "..." + text[max_len:max_len*2])
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        # Find last newline before max_len to avoid breaking mid-line
+        split_at = text.rfind('\n', 0, max_len)
+        if split_at <= 0:
+            # Fallback: find last space
+            split_at = text.rfind(' ', 0, max_len)
+        if split_at <= 0:
+            # Last resort: hard cut at max_len
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip('\n')
+    return chunks
+
+
+def _send_long_message(chat_id: int, text: str, max_len: int = 4000):
+    """Kirim pesan panjang ke Telegram, potong di batas baris untuk preserve Markdown."""
+    for chunk in _split_long_message(text, max_len):
+        send_telegram_message(chat_id, chunk)
 
 
 def _async_run_scan(chat_id: int, msg_id: int):
@@ -162,7 +187,16 @@ def _async_run_scan(chat_id: int, msg_id: int):
         print(f"[Scan] Selesai! {len(results)} saham unusual ditemukan.")
         report = scanner.format_telegram_report(results)
         print(f"[Scan] Report length: {len(report)} chars")
-        
+
+        # Persist scan results ke DB untuk audit trail
+        try:
+            from datetime import datetime
+            scan_date = datetime.now().strftime('%Y-%m-%d')
+            saved = db.save_scan_results(scan_date, results)
+            print(f"[Scan] {saved} results persisted ke database.")
+        except Exception as persist_err:
+            print(f"[Scan] Warning: Gagal persist results: {persist_err}")
+
         # Selalu kirim sebagai pesan BARU di bawah agar tidak pernah hilang
         _send_long_message(chat_id, report)
         
@@ -317,6 +351,15 @@ def status():
 def scan_api():
     max_res = int(request.args.get('max_results', 10))
     results = scanner.scan_unusual_activity(max_results=max_res)
+
+    # Persist scan results
+    try:
+        from datetime import datetime
+        scan_date = datetime.now().strftime('%Y-%m-%d')
+        db.save_scan_results(scan_date, results)
+    except Exception:
+        pass
+
     return jsonify({
         'status': 'ok',
         'count': len(results),

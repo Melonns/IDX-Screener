@@ -139,6 +139,24 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     hit_target       INTEGER,
     PRIMARY KEY (signal_id)
 );
+
+-- Scan Results Persistence (untuk audit trail & histori)
+CREATE TABLE IF NOT EXISTS scan_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_date       TEXT    NOT NULL,
+    ticker          TEXT    NOT NULL,
+    close           REAL,
+    turnover_5d     REAL,
+    unusual_count   INTEGER,
+    unusual_tags    TEXT,   -- JSON string: list of unusual tag_ids
+    all_tags        TEXT,   -- JSON string: all observation tags
+    liquidity_note  TEXT,
+    breadth_context TEXT,
+    sector_context  TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scan_results_date ON scan_results(scan_date);
+CREATE INDEX IF NOT EXISTS idx_scan_results_ticker ON scan_results(ticker);
 """
 
 
@@ -404,3 +422,100 @@ class DatabaseManager:
             df = df.set_index('date')
 
         return df
+
+    def get_db_stats(self) -> dict[str, int]:
+        """Return row counts for all major tables."""
+        tables = [
+            'stocks', 'daily_prices', 'daily_indicators',
+            'contextual_indicators', 'corporate_actions',
+            'idx_announcements', 'signals', 'signal_outcomes',
+            'scan_results',
+        ]
+        stats = {}
+        with self._connect() as conn:
+            for table in tables:
+                try:
+                    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+                    stats[table] = row[0] if row else 0
+                except Exception:
+                    stats[table] = 0
+        return stats
+
+    def save_corporate_actions(self, rows: list[tuple]) -> int:
+        """Bulk save corporate action events (ticker, date, event_type, value, dividend_yield)."""
+        if not rows:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO corporate_actions
+                    (ticker, date, event_type, value, dividend_yield)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def save_scan_results(self, scan_date: str, results: list[dict]) -> int:
+        """Persist scan results to scan_results table for audit trail."""
+        if not results:
+            return 0
+        import json
+        rows = []
+        for item in results:
+            unusual_tag_ids = [t['tag_id'] for t in item.get('unusual_tags', [])]
+            all_tags_clean = []
+            for t in item.get('all_tags', []):
+                all_tags_clean.append({
+                    'tag_id': t.get('tag_id', ''),
+                    'description': t.get('description', ''),
+                    'is_unusual': t.get('is_unusual', False),
+                })
+            rows.append((
+                scan_date,
+                item['ticker'],
+                item.get('close'),
+                item.get('turnover_5d'),
+                item.get('unusual_count', 0),
+                json.dumps(unusual_tag_ids),
+                json.dumps(all_tags_clean),
+                item.get('liquidity_note', ''),
+                item.get('breadth_context', ''),
+                item.get('sector_context', ''),
+            ))
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO scan_results
+                    (scan_date, ticker, close, turnover_5d, unusual_count,
+                     unusual_tags, all_tags, liquidity_note, breadth_context, sector_context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def get_recent_scan_results(self, scan_date: str = None, limit: int = 50) -> list[dict]:
+        """Retrieve recent scan results, optionally filtered by date."""
+        import json
+        conditions = []
+        params = []
+        if scan_date:
+            conditions.append("scan_date = ?")
+            params.append(scan_date)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"""
+            SELECT * FROM scan_results{where}
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d['unusual_tags'] = json.loads(d.get('unusual_tags') or '[]')
+            d['all_tags'] = json.loads(d.get('all_tags') or '[]')
+            results.append(d)
+        return results
