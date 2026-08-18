@@ -3,7 +3,7 @@ main.py — Flask & Telegram Bot Server for IDX-Screener v3
 
 Fitur Telegram Bot v3:
 1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI dengan Async Background Worker (threading).
-   Dilengkapi Safety Net (Anti-Spam Lock) agar user tidak bisa memicu multiple scan bersamaan.
+   Dilengkapi Safety Net (Anti-Spam Lock) & Automatic Plain Text Fallback jika Telegram Markdown error.
 2. /status atau /progress: Cek status & persentase progres pemindaian real-time saat dipanggil user.
 3. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut (Async Worker).
 4. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
@@ -58,7 +58,15 @@ def send_telegram_message(chat_id: int, text: str) -> dict:
     url = f'{TELEGRAM_API_URL}/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     resp = requests.post(url, json=payload, timeout=15)
-    return resp.json()
+    res_json = resp.json()
+    
+    # Fallback to plain text if Telegram rejects Markdown formatting (e.g. unescaped underscores)
+    if not res_json.get('ok'):
+        payload.pop('parse_mode', None)
+        resp = requests.post(url, json=payload, timeout=15)
+        res_json = resp.json()
+        
+    return res_json
 
 
 def edit_telegram_message(chat_id: int, message_id: int, text: str) -> dict:
@@ -67,7 +75,15 @@ def edit_telegram_message(chat_id: int, message_id: int, text: str) -> dict:
     url = f'{TELEGRAM_API_URL}/bot{TELEGRAM_BOT_TOKEN}/editMessageText'
     payload = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'parse_mode': 'Markdown'}
     resp = requests.post(url, json=payload, timeout=15)
-    return resp.json()
+    res_json = resp.json()
+    
+    # Fallback to plain text if Telegram rejects Markdown formatting (e.g. unescaped underscores)
+    if not res_json.get('ok'):
+        payload.pop('parse_mode', None)
+        resp = requests.post(url, json=payload, timeout=15)
+        res_json = resp.json()
+
+    return res_json
 
 
 def send_chat_action(chat_id: int, action: str = 'typing') -> dict:
@@ -131,19 +147,17 @@ def _async_run_scan(chat_id: int, msg_id: int):
         report  = scanner.format_telegram_report(results)
         
         if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, report)
-            except Exception:
+            res = edit_telegram_message(chat_id, msg_id, report)
+            if not res.get('ok'):
                 send_telegram_message(chat_id, report)
         else:
             send_telegram_message(chat_id, report)
     except Exception as err:
         err_msg = f"❌ *Error saat pemindaian*: `{str(err)[:100]}`"
         if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, err_msg)
-            except Exception:
-                send_telegram_message(chat_id, err_msg)
+            edit_telegram_message(chat_id, msg_id, err_msg)
+        else:
+            send_telegram_message(chat_id, err_msg)
     finally:
         with ACTIVE_SCANS_LOCK:
             ACTIVE_SCANS.discard(chat_id)
@@ -184,17 +198,17 @@ def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
             report = "\n".join(lines)
 
         if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, report)
-            except Exception:
+            res = edit_telegram_message(chat_id, msg_id, report)
+            if not res.get('ok'):
                 send_telegram_message(chat_id, report)
+        else:
+            send_telegram_message(chat_id, report)
     except Exception as err:
         err_msg = f"❌ *Error saat query ticker*: `{str(err)[:100]}`"
         if msg_id:
-            try:
-                edit_telegram_message(chat_id, msg_id, err_msg)
-            except Exception:
-                send_telegram_message(chat_id, err_msg)
+            edit_telegram_message(chat_id, msg_id, err_msg)
+        else:
+            send_telegram_message(chat_id, err_msg)
     finally:
         with ACTIVE_SCANS_LOCK:
             ACTIVE_SCANS.discard(chat_id)
