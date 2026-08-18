@@ -21,8 +21,6 @@ import pandas as pd
 
 SCHEMA_SQL = """
 -- Metadata saham
--- avg_volume_20d TIDAK disimpan di sini (stale tiap hari).
--- Ambil on-the-fly dari daily_indicators saat dibutuhkan.
 CREATE TABLE IF NOT EXISTS stocks (
     ticker      TEXT PRIMARY KEY,
     name        TEXT,
@@ -48,7 +46,6 @@ CREATE INDEX IF NOT EXISTS idx_daily_prices_date   ON daily_prices(date);
 CREATE INDEX IF NOT EXISTS idx_daily_prices_ticker ON daily_prices(ticker);
 
 -- Indikator teknikal terhitung per hari (derived, bisa dihitung ulang)
--- Ini adalah feature store untuk scoring engine dan ML training.
 CREATE TABLE IF NOT EXISTS daily_indicators (
     ticker           TEXT NOT NULL,
     date             TEXT NOT NULL,
@@ -127,11 +124,6 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_date   ON signals(date);
 CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker);
 
--- Tracking performa sinyal setelah N hari
--- target_threshold disimpan karena sering dituning.
--- PENTING: threshold minimum harus di atas total biaya transaksi
--- (~0.3-0.5% roundtrip untuk IDX). Kalau threshold < biaya, hasil bisa
--- terlihat profit padahal setelah fee tetap merugi.
 CREATE TABLE IF NOT EXISTS signal_outcomes (
     signal_id        INTEGER NOT NULL REFERENCES signals(id),
     ticker           TEXT    NOT NULL,
@@ -151,18 +143,6 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 
 
 class DatabaseManager:
-    """
-    Mengelola SQLite database untuk IDX-Screener v2.
-
-    Semua operasi database dilakukan melalui class ini.
-    Gunakan sebagai context manager atau inisialisasi langsung.
-
-    Contoh:
-        db = DatabaseManager('idx_screener.db')
-        db.save_prices('BBCA.JK', df)
-        prices = db.get_prices('BBCA.JK', '2025-01-01', '2026-01-01')
-    """
-
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,10 +169,6 @@ class DatabaseManager:
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
 
-    # ─────────────────────────────────────────────────────────────
-    # STOCKS
-    # ─────────────────────────────────────────────────────────────
-
     def upsert_stock(self, ticker: str, name: str = None, sector: str = None) -> None:
         """Insert atau update metadata saham."""
         with self._connect() as conn:
@@ -208,22 +184,8 @@ class DatabaseManager:
                 (ticker, name, sector, datetime.now().isoformat()),
             )
 
-    # ─────────────────────────────────────────────────────────────
-    # DAILY PRICES
-    # ─────────────────────────────────────────────────────────────
-
     def save_prices(self, ticker: str, df: pd.DataFrame) -> int:
-        """
-        Simpan OHLCV data ke daily_prices.
-        DataFrame harus punya kolom: Open, High, Low, Close, Volume.
-        Index harus berupa DatetimeIndex atau string date.
-
-        Baris yang sudah ada akan di-skip (INSERT OR IGNORE).
-        Validasi data dilakukan di sini.
-
-        Returns:
-            Jumlah baris yang berhasil diinsert.
-        """
+        """Simpan OHLCV data ke daily_prices."""
         if df.empty:
             return 0
 
@@ -233,7 +195,7 @@ class DatabaseManager:
 
         rows = []
         for date_idx, row in df.iterrows():
-            date_str = str(date_idx)[:10]  # YYYY-MM-DD
+            date_str = str(date_idx)[:10]
             is_valid, note = self._validate_candle(row)
             rows.append((
                 ticker,
@@ -256,7 +218,6 @@ class DatabaseManager:
                 """,
                 rows,
             )
-            # Update metadata
             conn.execute(
                 "INSERT OR REPLACE INTO stocks (ticker, last_updated) VALUES (?, ?)",
                 (ticker, datetime.now().isoformat()),
@@ -265,10 +226,6 @@ class DatabaseManager:
         return len(rows)
 
     def _validate_candle(self, row) -> tuple[bool, Optional[str]]:
-        """
-        Validasi satu candle. Return (is_valid, reason).
-        Row yang invalid tetap disimpan tapi is_valid=0.
-        """
         open_  = row.get('Open')
         high   = row.get('High')
         low    = row.get('Low')
@@ -293,18 +250,6 @@ class DatabaseManager:
         end: str = None,
         valid_only: bool = True,
     ) -> pd.DataFrame:
-        """
-        Ambil OHLCV dari daily_prices.
-
-        Args:
-            ticker: Kode saham (misal 'BBCA.JK')
-            start: Tanggal awal 'YYYY-MM-DD' (opsional)
-            end: Tanggal akhir 'YYYY-MM-DD' (opsional)
-            valid_only: Kalau True, hanya return baris dengan is_valid=1
-
-        Returns:
-            DataFrame dengan index tanggal, kolom Open/High/Low/Close/Volume.
-        """
         conditions = ["ticker = ?"]
         params: list = [ticker]
 
@@ -335,7 +280,6 @@ class DatabaseManager:
         return df
 
     def get_latest_date(self, ticker: str) -> Optional[str]:
-        """Return tanggal data terbaru untuk ticker, atau None kalau belum ada."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT MAX(date) FROM daily_prices WHERE ticker = ?", (ticker,)
@@ -343,24 +287,15 @@ class DatabaseManager:
         return row[0] if row and row[0] else None
 
     def get_tickers(self) -> list[str]:
-        """Return semua ticker yang ada di database."""
+        """Return semua ticker unik yang ada di daily_prices maupun stocks table."""
         with self._connect() as conn:
-            rows = conn.execute("SELECT ticker FROM stocks ORDER BY ticker").fetchall()
-        return [r[0] for r in rows]
-
-    # ─────────────────────────────────────────────────────────────
-    # DAILY INDICATORS
-    # ─────────────────────────────────────────────────────────────
+            rows = conn.execute(
+                "SELECT DISTINCT ticker FROM daily_prices UNION SELECT ticker FROM stocks ORDER BY ticker"
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
 
     def save_indicators(self, ticker: str, df: pd.DataFrame) -> int:
-        """
-        Simpan pre-computed technical indicators ke daily_indicators.
-        DataFrame harus punya kolom sesuai schema.
-        INSERT OR REPLACE — akan overwrite kalau sudah ada.
-
-        Returns:
-            Jumlah baris yang disimpan.
-        """
+        """Simpan pre-computed indicators ke daily_indicators dan update stocks table."""
         if df.empty:
             return 0
 
@@ -388,6 +323,10 @@ class DatabaseManager:
                 f"INSERT OR REPLACE INTO daily_indicators ({cols_str}) VALUES ({placeholders})",
                 rows,
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO stocks (ticker, last_updated) VALUES (?, ?)",
+                (ticker, datetime.now().isoformat()),
+            )
 
         return len(rows)
 
@@ -397,10 +336,6 @@ class DatabaseManager:
         start: str = None,
         end: str = None,
     ) -> pd.DataFrame:
-        """
-        Ambil pre-computed indicators dari daily_indicators.
-        Return DataFrame dengan index tanggal.
-        """
         conditions = ["ticker = ?"]
         params: list = [ticker]
 
@@ -436,11 +371,6 @@ class DatabaseManager:
         start: str = None,
         end: str = None,
     ) -> pd.DataFrame:
-        """
-        Return JOIN dari daily_prices + daily_indicators.
-        Berguna untuk scoring engine dan backtest.
-        Hanya return baris dengan is_valid=1.
-        """
         conditions = ["p.ticker = ?"]
         params: list = [ticker]
 
@@ -455,19 +385,14 @@ class DatabaseManager:
         where = " AND ".join(conditions)
 
         query = f"""
-            SELECT
-                p.date,
-                p.open  AS Open,
-                p.high  AS High,
-                p.low   AS Low,
-                p.close AS Close,
-                p.volume AS Volume,
-                i.rsi_14, i.ema_9, i.ema_21, i.ema_50,
-                i.macd, i.macd_signal, i.macd_diff,
-                i.bb_upper, i.bb_lower, i.bb_width,
-                i.atr_14, i.volume_ratio_20d
+            SELECT p.date, p.open AS Open, p.high AS High, p.low AS Low,
+                   p.close AS Close, p.volume AS Volume,
+                   i.rsi_14, i.ema_9, i.ema_21, i.ema_50,
+                   i.macd, i.macd_signal, i.macd_diff,
+                   i.bb_upper, i.bb_lower, i.bb_width,
+                   i.atr_14, i.volume_ratio_20d
             FROM daily_prices p
-            LEFT JOIN daily_indicators i USING (ticker, date)
+            LEFT JOIN daily_indicators i ON p.ticker = i.ticker AND p.date = i.date
             WHERE {where}
             ORDER BY p.date ASC
         """
@@ -479,300 +404,3 @@ class DatabaseManager:
             df = df.set_index('date')
 
         return df
-
-    # ─────────────────────────────────────────────────────────────
-    # CONTEXTUAL INDICATORS (PHASE 4)
-    # ─────────────────────────────────────────────────────────────
-
-    def save_contextual_indicators(self, ticker: str, df: pd.DataFrame) -> int:
-        if df.empty:
-            return 0
-        
-        cols = ['rel_strength_5d', 'rel_strength_5d_rank', 'vol_accum_5d', 'vol_accum_5d_rank', 'turnover_5d']
-        rows = []
-        for date_idx, row in df.iterrows():
-            date_str = str(date_idx)[:10]
-            values = [float(row[c]) if c in row.index and pd.notna(row[c]) else None for c in cols]
-            rows.append((ticker, date_str, *values))
-            
-        placeholders = ", ".join(["?"] * (2 + len(cols)))
-        cols_str = "ticker, date, " + ", ".join(cols)
-        
-        with self._connect() as conn:
-            conn.executemany(
-                f"INSERT OR REPLACE INTO contextual_indicators ({cols_str}) VALUES ({placeholders})",
-                rows
-            )
-        return len(rows)
-
-    def get_prices_with_context(self, ticker: str, start: str = None, end: str = None) -> pd.DataFrame:
-        """JOIN daily_prices, market_index, and contextual_indicators."""
-        conditions = ["p.ticker = ?"]
-        params: list = [ticker]
-        if start:
-            conditions.append("p.date >= ?")
-            params.append(start)
-        if end:
-            conditions.append("p.date <= ?")
-            params.append(end)
-        conditions.append("p.is_valid = 1")
-        where = " AND ".join(conditions)
-        
-        query = f"""
-            SELECT 
-                p.date, p.open AS Open, p.high AS High, p.low AS Low, p.close AS Close, p.volume AS Volume,
-                c.rel_strength_5d, c.rel_strength_5d_rank, c.vol_accum_5d, c.vol_accum_5d_rank, c.turnover_5d,
-                m.ret_5d AS ihsg_ret_5d, m.slope_20d AS ihsg_slope_20d
-            FROM daily_prices p
-            LEFT JOIN contextual_indicators c USING (ticker, date)
-            LEFT JOIN market_index m ON p.date = m.date
-            WHERE {where}
-            ORDER BY p.date ASC
-        """
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=params, parse_dates=['date'])
-        if not df.empty:
-            df = df.set_index('date')
-        return df
-
-    # ─────────────────────────────────────────────────────────────
-    # CORPORATE ACTIONS & ANNOUNCEMENTS (PHASE 5)
-    # ─────────────────────────────────────────────────────────────
-
-    def save_corporate_actions(self, rows: list[tuple]) -> int:
-        """
-        rows format: [(ticker, date, event_type, value, dividend_yield), ...]
-        """
-        if not rows:
-            return 0
-        with self._connect() as conn:
-            # Recreate table without strict foreign key if needed
-            conn.execute("PRAGMA foreign_keys = OFF;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS corporate_actions (
-                    ticker               TEXT NOT NULL,
-                    date                 TEXT NOT NULL,
-                    event_type           TEXT NOT NULL,
-                    value                REAL,
-                    dividend_yield       REAL,
-                    PRIMARY KEY (ticker, date, event_type)
-                );
-            """)
-            conn.executemany("""
-                INSERT OR REPLACE INTO corporate_actions 
-                (ticker, date, event_type, value, dividend_yield)
-                VALUES (?, ?, ?, ?, ?)
-            """, rows)
-            conn.execute("PRAGMA foreign_keys = ON;")
-        return len(rows)
-
-    def save_idx_announcements(self, rows: list[tuple]) -> int:
-        """
-        rows format: [(announcement_id, date, ticker, title, tags, summary), ...]
-        """
-        if not rows:
-            return 0
-        with self._connect() as conn:
-            conn.executemany("""
-                INSERT OR IGNORE INTO idx_announcements 
-                (announcement_id, date, ticker, title, tags, summary)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, rows)
-        return len(rows)
-
-    def get_prices_with_catalysts(self, ticker: str, start: str = None, end: str = None) -> pd.DataFrame:
-        """
-        JOIN daily_prices, contextual_indicators, market_index, and corporate_actions.
-        """
-        conditions = ["p.ticker = ?"]
-        params: list = [ticker]
-        if start:
-            conditions.append("p.date >= ?")
-            params.append(start)
-        if end:
-            conditions.append("p.date <= ?")
-            params.append(end)
-        conditions.append("p.is_valid = 1")
-        where = " AND ".join(conditions)
-        
-        query = f"""
-            SELECT 
-                p.date, p.open AS Open, p.high AS High, p.low AS Low, p.close AS Close, p.volume AS Volume,
-                c.rel_strength_5d, c.rel_strength_5d_rank, c.vol_accum_5d, c.vol_accum_5d_rank, c.turnover_5d,
-                m.ret_5d AS ihsg_ret_5d, m.slope_20d AS ihsg_slope_20d,
-                ca.event_type AS corp_event, ca.value AS corp_value, ca.dividend_yield
-            FROM daily_prices p
-            LEFT JOIN contextual_indicators c USING (ticker, date)
-            LEFT JOIN market_index m ON p.date = m.date
-            LEFT JOIN corporate_actions ca ON p.ticker = ca.ticker AND p.date = ca.date
-            WHERE {where}
-            ORDER BY p.date ASC
-        """
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=params, parse_dates=['date'])
-        if not df.empty:
-            df = df.set_index('date')
-        return df
-
-    # ─────────────────────────────────────────────────────────────
-    # SIGNALS
-    # ─────────────────────────────────────────────────────────────
-
-    def save_signal(self, result: dict) -> int:
-        """
-        Simpan hasil scoring ke tabel signals.
-
-        Args:
-            result: Dict output dari ScoringEngine.score(), dengan kunci:
-                    kode, tanggal, skor_total, sinyal, breakdown, scoring_version
-
-        Returns:
-            ID sinyal yang baru disimpan (untuk link ke signal_outcomes).
-        """
-        breakdown_json = json.dumps(result.get('breakdown', []), ensure_ascii=False)
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO signals (ticker, date, skor_total, sinyal, breakdown, scoring_version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result['kode'],
-                    result['tanggal'],
-                    result['skor_total'],
-                    result['sinyal'],
-                    breakdown_json,
-                    result.get('scoring_version', 'rule_v1.0'),
-                    datetime.now().isoformat(),
-                ),
-            )
-        return cursor.lastrowid
-
-    def get_signals(
-        self,
-        ticker: str = None,
-        date: str = None,
-        min_score: int = None,
-    ) -> pd.DataFrame:
-        """Ambil sinyal dengan filter opsional. Return DataFrame."""
-        conditions = []
-        params: list = []
-
-        if ticker:
-            conditions.append("ticker = ?")
-            params.append(ticker)
-        if date:
-            conditions.append("date = ?")
-            params.append(date)
-        if min_score is not None:
-            conditions.append("skor_total >= ?")
-            params.append(min_score)
-
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        query = f"""
-            SELECT id, ticker, date, skor_total, sinyal, breakdown, scoring_version, created_at
-            FROM signals
-            {where}
-            ORDER BY date DESC, skor_total DESC
-        """
-
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=params)
-
-        return df
-
-    def get_pending_outcomes(self, days_ago_min: int = 1, days_ago_max: int = 7) -> pd.DataFrame:
-        """
-        Return sinyal yang belum punya outcome dan sudah cukup lama
-        (antara days_ago_min dan days_ago_max hari lalu).
-        """
-        query = """
-            SELECT s.id, s.ticker, s.date, s.skor_total
-            FROM signals s
-            LEFT JOIN signal_outcomes o ON s.id = o.signal_id
-            WHERE o.signal_id IS NULL
-              AND date(s.date) <= date('now', ? || ' days')
-              AND date(s.date) >= date('now', ? || ' days')
-            ORDER BY s.date ASC
-        """
-        params = [f'-{days_ago_min}', f'-{days_ago_max}']
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=params)
-        return df
-
-    # ─────────────────────────────────────────────────────────────
-    # SIGNAL OUTCOMES
-    # ─────────────────────────────────────────────────────────────
-
-    def save_outcome(self, outcome: dict) -> None:
-        """
-        Simpan atau update outcome sebuah sinyal.
-
-        Args:
-            outcome: Dict dengan kunci: signal_id, ticker, signal_date,
-                     price_at_signal, price_n1, return_n1, price_n3,
-                     return_n3, price_n5, return_n5, target_threshold, hit_target
-        """
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO signal_outcomes
-                    (signal_id, ticker, signal_date, price_at_signal,
-                     price_n1, return_n1, price_n3, return_n3,
-                     price_n5, return_n5, target_threshold, hit_target)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    outcome['signal_id'],
-                    outcome['ticker'],
-                    outcome['signal_date'],
-                    outcome.get('price_at_signal'),
-                    outcome.get('price_n1'),
-                    outcome.get('return_n1'),
-                    outcome.get('price_n3'),
-                    outcome.get('return_n3'),
-                    outcome.get('price_n5'),
-                    outcome.get('return_n5'),
-                    outcome.get('target_threshold'),
-                    outcome.get('hit_target'),
-                ),
-            )
-
-    def get_outcomes(self, min_score: int = None) -> pd.DataFrame:
-        """Ambil semua outcome yang sudah ter-fill, join dengan signals."""
-        where = ""
-        params: list = []
-        if min_score is not None:
-            where = "WHERE s.skor_total >= ?"
-            params.append(min_score)
-
-        query = f"""
-            SELECT
-                s.ticker, s.date AS signal_date, s.skor_total, s.sinyal,
-                o.price_at_signal, o.return_n1, o.return_n3, o.return_n5,
-                o.target_threshold, o.hit_target
-            FROM signal_outcomes o
-            JOIN signals s ON o.signal_id = s.id
-            {where}
-            ORDER BY s.date DESC
-        """
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=params)
-        return df
-
-    # ─────────────────────────────────────────────────────────────
-    # UTILITIES
-    # ─────────────────────────────────────────────────────────────
-
-    def get_db_stats(self) -> dict:
-        """Return statistik isi database untuk debugging."""
-        with self._connect() as conn:
-            stats = {}
-            for table in ['stocks', 'daily_prices', 'daily_indicators', 'signals', 'signal_outcomes']:
-                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                stats[table] = row[0]
-            invalid = conn.execute(
-                "SELECT COUNT(*) FROM daily_prices WHERE is_valid = 0"
-            ).fetchone()[0]
-            stats['invalid_prices'] = invalid
-        return stats
