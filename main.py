@@ -138,6 +138,10 @@ def parse_tickers_from_text(text: str) -> list[str]:
     return list(dict.fromkeys(tickers))
 
 
+# ─── Preload State ───────────────────────────────────────────────────────────
+PRELOAD_RUNNING = False
+PRELOAD_LOCK    = threading.Lock()
+
 # ─── Async Workers (Anti-Timeout & Anti-Stuck) ───────────────────────────────
 
 def _send_long_message(chat_id: int, text: str, max_len: int = 4000):
@@ -227,6 +231,75 @@ def _async_run_ticker_query(chat_id: int, msg_id: int, tickers: list[str]):
     finally:
         with ACTIVE_SCANS_LOCK:
             ACTIVE_SCANS.discard(chat_id)
+
+
+def _async_preload_all(chat_id: int, msg_id: int):
+    """Background worker untuk mengunduh seluruh data saham BEI secara bertahap."""
+    global PRELOAD_RUNNING
+    try:
+        from data.idx_universe import fetch_live_idx_tickers
+        from data.ingestion import compute_indicators
+
+        all_tickers = fetch_live_idx_tickers()
+        cached      = set(db.get_tickers())
+        to_fetch    = [t for t in all_tickers if t not in cached]
+
+        total   = len(to_fetch)
+        done    = 0
+        failed  = 0
+
+        if total == 0:
+            msg = f"✅ *Preload selesai!* Semua {len(all_tickers)} saham BEI sudah ada di cache."
+            edit_telegram_message(chat_id, msg_id, msg)
+            return
+
+        edit_telegram_message(
+            chat_id, msg_id,
+            f"🔄 *Preload dimulai!*\n\nMengunduh `{total}` saham baru dari BEI...\nProses ini berjalan di background. Laporan progres dikirim setiap 50 saham."
+        )
+
+        for ticker in to_fetch:
+            try:
+                df_p = scanner.provider.get_or_fetch(ticker, period_days=252*2)
+                if not df_p.empty:
+                    df_ind = compute_indicators(df_p)
+                    db.save_indicators(ticker, df_ind)
+            except Exception:
+                failed += 1
+
+            done += 1
+
+            # Kirim progres setiap 50 saham
+            if done % 50 == 0 or done == total:
+                pct = round(done / total * 100, 1)
+                cached_now = len(db.get_tickers())
+                try:
+                    edit_telegram_message(
+                        chat_id, msg_id,
+                        f"🔄 *Preload Progres: {done}/{total} saham ({pct}%)*\n"
+                        f"• Total di-cache : `{cached_now} saham`\n"
+                        f"• Gagal diunduh  : `{failed} saham`\n"
+                        f"_{'Selesai! ✅' if done == total else 'Sedang berjalan...'}_"
+                    )
+                except Exception:
+                    pass
+
+        final_cached = len(db.get_tickers())
+        send_telegram_message(
+            chat_id,
+            f"✅ *Preload Selesai!*\n\n"
+            f"• Total saham di-cache : `{final_cached} saham`\n"
+            f"• Berhasil diunduh     : `{done - failed} saham`\n"
+            f"• Gagal diunduh       : `{failed} saham`\n\n"
+            f"Sekarang `/scan` akan memindai seluruh `{final_cached}` saham secara instan!"
+        )
+    except Exception as err:
+        tb = traceback.format_exc()
+        print(f"[Preload] ❌ ERROR: {err}\n{tb}")
+        send_telegram_message(chat_id, f"❌ *Preload error*: `{str(err)[:200]}`")
+    finally:
+        with PRELOAD_LOCK:
+            PRELOAD_RUNNING = False
 
 
 # ─── Flask Routes ─────────────────────────────────────────────────────────────
@@ -328,6 +401,23 @@ def telegram_webhook():
                 "_Mohon tunggu hasil pemindaian sebelumnya selesai atau ketik /status untuk mengecek progres._"
             )
             return jsonify({'ok': True})
+
+    # Handle /preload command — Unduh semua saham BEI ke cache sekaligus
+    if text_lower in ['/preload', 'preload']:
+        global PRELOAD_RUNNING
+        with PRELOAD_LOCK:
+            if PRELOAD_RUNNING:
+                send_telegram_message(chat_id, "⚠️ *Preload sudah berjalan!*\nKetik /status untuk mengecek progres scan, atau tunggu preload selesai.")
+                return jsonify({'ok': True})
+            PRELOAD_RUNNING = True
+
+        load_res = send_telegram_message(
+            chat_id,
+            "🔄 *Memulai Preload seluruh saham BEI...*\n_Mengambil daftar saham terbaru dari idx.co.id..._"
+        )
+        msg_id_preload = load_res.get('result', {}).get('message_id')
+        threading.Thread(target=_async_preload_all, args=(chat_id, msg_id_preload), daemon=True).start()
+        return jsonify({'ok': True})
 
     # Handle /scan command (ASYNC BACKGROUND THREAD)
     if text_lower in ['/scan', 'scan', 'scan hari ini']:
