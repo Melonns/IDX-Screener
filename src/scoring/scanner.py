@@ -5,11 +5,12 @@ Prinsip Utama:
 - Deskriptif, bukan prediktif. Tidak ada skor total 0-100, tidak ada sinyal BULLISH/BEARISH/BUY/SELL.
 - Menyaring saham berdasarkan Unusual Activity (aktivitas di luar kebiasaan relatif terhadap histori 60 hari saham itu sendiri).
 - Ranking berdasarkan JUMLAH kondisi unusual yang terpenuhi bersamaan.
-- Auto-sync seluruh 960+ saham aktif BEI secara REAL-TIME dari API resmi idx.co.id (termasuk IPO baru & eliminasi delisting).
+- Auto-sync seluruh 960+ saham aktif BEI secara REAL-TIME dari API resmi idx.co.id.
+- Thread-safe Progress Tracking untuk fitur /status & /progress Telegram.
 - Terpisah secara eksplisit dari strategi yang sudah divalidasi (seperti Dividend Drift).
 """
 
-import os, sys
+import os, sys, time, threading
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -40,6 +41,37 @@ class TechnicalObservationScanner:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.provider = YFinanceProvider(db)
+        
+        # Thread-safe Progress Tracking
+        self.progress_lock = threading.Lock()
+        self.progress_data = {
+            'is_running': False,
+            'scanned': 0,
+            'total': 0,
+            'unusual_found': 0,
+            'last_ticker': '',
+            'start_time': 0.0
+        }
+
+    def get_scan_progress(self) -> Dict[str, Any]:
+        """Return current live scan progress snapshot."""
+        with self.progress_lock:
+            data = dict(self.progress_data)
+            if data['is_running'] and data['start_time'] > 0:
+                elapsed = time.time() - data['start_time']
+                data['elapsed_sec'] = int(elapsed)
+                pct = (data['scanned'] / data['total']) if data['total'] > 0 else 0.0
+                data['pct'] = round(pct * 100, 1)
+                if pct > 0.05:
+                    est_total = elapsed / pct
+                    data['est_remaining_sec'] = max(0, int(est_total - elapsed))
+                else:
+                    data['est_remaining_sec'] = 0
+            else:
+                data['elapsed_sec'] = 0
+                data['est_remaining_sec'] = 0
+                data['pct'] = 0.0
+            return data
 
     def scan_unusual_activity(
         self,
@@ -50,8 +82,7 @@ class TechnicalObservationScanner:
     ) -> List[Dict[str, Any]]:
         """
         Scan stock universe for stocks showing unusual technical activity relative to their own history.
-        Automatically syncs real-time 960+ active BEI tickers directly from official idx.co.id API.
-        If data is missing from local SQLite (e.g. freshly cloned Replit), automatically fetches from yfinance.
+        Tracks live progress in self.progress_data.
         """
         if tickers is None:
             db_tickers = self.db.get_tickers()
@@ -60,95 +91,115 @@ class TechnicalObservationScanner:
             else:
                 tickers = fetch_live_idx_tickers()
 
-        scanned_results = []
         total_universe = len(tickers)
 
-        for ticker in tickers:
-            ticker_clean = ticker.upper().strip()
-            if not ticker_clean.endswith('.JK'):
-                ticker_clean = f"{ticker_clean}.JK"
+        with self.progress_lock:
+            self.progress_data['is_running'] = True
+            self.progress_data['scanned'] = 0
+            self.progress_data['total'] = total_universe
+            self.progress_data['unusual_found'] = 0
+            self.progress_data['last_ticker'] = ''
+            self.progress_data['start_time'] = time.time()
 
-            # 1. Load from DB
-            df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
+        scanned_results = []
 
-            # 2. Auto-fetch fallback if DB is empty / missing rows
-            if df.empty or len(df) < lookback_days:
-                try:
-                    df_prices = self.provider.get_or_fetch(ticker_clean, period_days=252*2)
-                    if not df_prices.empty:
-                        df_ind = compute_indicators(df_prices)
-                        self.db.save_indicators(ticker_clean, df_ind)
-                        df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
-                except Exception as exc:
-                    print(f"[Scanner] Warning: Failed auto-fetch for {ticker_clean}: {exc}")
+        try:
+            for ticker in tickers:
+                ticker_clean = ticker.upper().strip()
+                if not ticker_clean.endswith('.JK'):
+                    ticker_clean = f"{ticker_clean}.JK"
+
+                with self.progress_lock:
+                    self.progress_data['scanned'] += 1
+                    self.progress_data['last_ticker'] = ticker_clean
+
+                # 1. Load from DB
+                df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
+
+                # 2. Auto-fetch fallback if DB is empty / missing rows
+                if df.empty or len(df) < lookback_days:
+                    try:
+                        df_prices = self.provider.get_or_fetch(ticker_clean, period_days=252*2)
+                        if not df_prices.empty:
+                            df_ind = compute_indicators(df_prices)
+                            self.db.save_indicators(ticker_clean, df_ind)
+                            df = self.db.get_prices_with_indicators(ticker_clean, end=as_of_date)
+                    except Exception as exc:
+                        print(f"[Scanner] Warning: Failed auto-fetch for {ticker_clean}: {exc}")
+                        continue
+
+                if df.empty or len(df) < lookback_days:
                     continue
 
-            if df.empty or len(df) < lookback_days:
-                continue
+                # Ensure turnover_5d calculation on-the-fly
+                if 'turnover_5d' not in df.columns:
+                    df['turnover_5d'] = (df['Close'] * df['Volume']).rolling(5, min_periods=3).mean()
 
-            # Ensure turnover_5d calculation on-the-fly
-            if 'turnover_5d' not in df.columns:
-                df['turnover_5d'] = (df['Close'] * df['Volume']).rolling(5, min_periods=3).mean()
+                # Evaluate observation tags
+                tags = evaluate_observation_tags(df, lookback_days=lookback_days)
+                unusual_tags = [t for t in tags if t.get('is_unusual')]
 
-            # Evaluate observation tags
-            tags = evaluate_observation_tags(df, lookback_days=lookback_days)
-            unusual_tags = [t for t in tags if t.get('is_unusual')]
+                if not unusual_tags:
+                    continue
 
-            if not unusual_tags:
-                continue
+                with self.progress_lock:
+                    self.progress_data['unusual_found'] += 1
 
-            latest_row  = df.iloc[-1]
-            date_str    = df.index[-1].strftime('%Y-%m-%d')
-            close_p     = float(latest_row['Close'])
-            turnover_5d = float(latest_row['turnover_5d']) if pd.notna(latest_row['turnover_5d']) else None
+                latest_row  = df.iloc[-1]
+                date_str    = df.index[-1].strftime('%Y-%m-%d')
+                close_p     = float(latest_row['Close'])
+                turnover_5d = float(latest_row['turnover_5d']) if pd.notna(latest_row['turnover_5d']) else None
 
-            # Add Rarity and Streak details to each tag
-            processed_tags = []
-            for tag in tags:
-                t_id = tag['tag_id']
-                t_dict = dict(tag)
+                # Add Rarity and Streak details to each tag
+                processed_tags = []
+                for tag in tags:
+                    t_id = tag['tag_id']
+                    t_dict = dict(tag)
 
-                # Add streak for trend alignment or persistent unusual tags
-                streak_val = get_condition_streak(df, t_id)
-                if streak_val > 1:
-                    t_dict['description'] += f" (berlangsung {streak_val} hari berturut-turut)"
+                    # Add streak for trend alignment or persistent unusual tags
+                    streak_val = get_condition_streak(df, t_id)
+                    if streak_val > 1:
+                        t_dict['description'] += f" (berlangsung {streak_val} hari berturut-turut)"
 
-                # Add Rarity Context for unusual tags
-                if tag.get('is_unusual'):
-                    rarity_info = get_rarity_context(ticker_clean, t_id, df_history=df, lookback_days=252)
-                    t_dict['rarity_text'] = rarity_info.get('summary_text', '')
+                    # Add Rarity Context for unusual tags
+                    if tag.get('is_unusual'):
+                        rarity_info = get_rarity_context(ticker_clean, t_id, df_history=df, lookback_days=252)
+                        t_dict['rarity_text'] = rarity_info.get('summary_text', '')
 
-                processed_tags.append(t_dict)
+                    processed_tags.append(t_dict)
 
-            liquidity_note = get_liquidity_note(turnover_5d)
+                liquidity_note = get_liquidity_note(turnover_5d)
 
-            scanned_results.append({
-                'ticker': ticker_clean,
-                'date': date_str,
-                'close': close_p,
-                'turnover_5d': turnover_5d,
-                'liquidity_note': liquidity_note,
-                'unusual_count': len(unusual_tags),
-                'all_tags': processed_tags,
-                'unusual_tags': [t for t in processed_tags if t.get('is_unusual')]
-            })
+                scanned_results.append({
+                    'ticker': ticker_clean,
+                    'date': date_str,
+                    'close': close_p,
+                    'turnover_5d': turnover_5d,
+                    'liquidity_note': liquidity_note,
+                    'unusual_count': len(unusual_tags),
+                    'all_tags': processed_tags,
+                    'unusual_tags': [t for t in processed_tags if t.get('is_unusual')]
+                })
 
-        # Rank by count of unusual conditions met (descending)
-        scanned_results.sort(key=lambda x: x['unusual_count'], reverse=True)
-        top_results = scanned_results[:max_results]
+            # Rank by count of unusual conditions met (descending)
+            scanned_results.sort(key=lambda x: x['unusual_count'], reverse=True)
+            top_results = scanned_results[:max_results]
 
-        # Attach Market Breadth & Sector Context after top_results are determined
-        for item in top_results:
-            t = item['ticker']
-            
-            # Market Breadth context for primary unusual condition
-            first_unusual_id = item['unusual_tags'][0]['tag_id'] if item['unusual_tags'] else ''
-            item['breadth_context'] = get_market_breadth_context(first_unusual_id, top_results, total_universe_count=total_universe)
-            
-            # Sector context (informative only)
-            item['sector_context']  = get_sector_context(t, top_results)
+            # Attach Market Breadth & Sector Context after top_results are determined
+            for item in top_results:
+                t = item['ticker']
+                
+                # Market Breadth context for primary unusual condition
+                first_unusual_id = item['unusual_tags'][0]['tag_id'] if item['unusual_tags'] else ''
+                item['breadth_context'] = get_market_breadth_context(first_unusual_id, top_results, total_universe_count=total_universe)
+                
+                # Sector context (informative only)
+                item['sector_context']  = get_sector_context(t, top_results)
 
-        return top_results
+            return top_results
+        finally:
+            with self.progress_lock:
+                self.progress_data['is_running'] = False
 
     def format_telegram_report(self, scanned_results: List[Dict[str, Any]], as_of_date: Optional[str] = None) -> str:
         """

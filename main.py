@@ -4,9 +4,10 @@ main.py — Flask & Telegram Bot Server for IDX-Screener v3
 Fitur Telegram Bot v3:
 1. /scan atau pesan otomatis: Scan seluruh universe saham pasar BEI dengan Async Background Worker (threading).
    Dilengkapi Safety Net (Anti-Spam Lock) agar user tidak bisa memicu multiple scan bersamaan.
-2. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut (Async Worker).
-3. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
-4. /ping: Tes koneksi & latensi jaringan bot real-time.
+2. /status atau /progress: Cek status & persentase progres pemindaian real-time saat dipanggil user.
+3. Input ticker (misal: BBRI ASII): Tampilkan fakta observasi deskriptif khusus saham tersebut (Async Worker).
+4. /dividends: Tampilkan sinyal aktif strategi Dividend Drift v1.0 yang divalidasi out-of-sample.
+5. /ping: Tes koneksi & latensi jaringan bot real-time.
 
 CATATAN:
 - TIDAK ADA label "BULLISH", "BEARISH", "BUY", "SELL", atau skor 0-100.
@@ -85,15 +86,18 @@ def get_help_message() -> str:
 📌 *Cara Penggunaan Telegram Bot:*
 
 1️⃣ */scan* (atau kirim tombol Scan):
-   Memindai seluruh pasar BEI & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan (dengan Async Worker + Anti-Spam Lock).
+   Memindai seluruh pasar BEI (960+ saham) & menampilkan daftar 5–15 saham yang beraktivitas di luar kebiasaan.
 
-2️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
+2️⃣ */status* atau */progress*:
+   Mengecek status & persentase progres pemindaian real-time saat scan sedang berlangsung.
+
+3️⃣ *Kirim Kode Saham* (misal: `BBRI` atau `ASII TLKM`):
    Melihat fakta observasi deskriptif (Volume percentile, RSI percentile, EMA trend, Breakout, Rarity 12 bulan) khusus saham tersebut.
 
-3️⃣ */dividends*:
+4️⃣ */dividends*:
    Melihat sinyal aktif & mendatang dari strategi *Dividend Cum-Date Drift* (strategi yang lolos validasi out-of-sample).
 
-4️⃣ */ping*:
+5️⃣ */ping*:
    Tes koneksi jaringan, status server, dan latensi bot real-time.
 
 *Perintah Tambahan:*
@@ -264,13 +268,35 @@ def telegram_webhook():
         send_telegram_message(chat_id, ping_msg)
         return jsonify({'ok': True})
 
+    # Handle /status or /progress command (Live Scan Progress Tracker)
+    if text_lower in ['/status', '/progress', 'progres', 'status', 'progress']:
+        send_chat_action(chat_id, 'typing')
+        prog = scanner.get_scan_progress()
+        if prog.get('is_running'):
+            pct_str = f"{prog['pct']}%"
+            est_str = f"~{prog['est_remaining_sec']} detik" if prog['est_remaining_sec'] > 0 else "hampir selesai"
+            last_t  = prog['last_ticker'].replace('.JK', '') if prog['last_ticker'] else '-'
+            msg = (
+                f"⏳ *Status Progres Pemindaian Real-Time:*\n\n"
+                f"• **Saham Diproses** : `{prog['scanned']} / {prog['total']} saham` ({pct_str})\n"
+                f"• **Kondisi Unusual** : `{prog['unusual_found']} ditemukan`\n"
+                f"• **Saham Terakhir**  : `{last_t}`\n"
+                f"• **Waktu Berjalan**  : `{prog['elapsed_sec']} detik`\n"
+                f"• **Estimasi Sisa**   : `{est_str}`\n\n"
+                f"_Ketik /status lagi kapan saja untuk memperbarui progres._"
+            )
+        else:
+            msg = "ℹ️ Tidak ada pemindaian pasar yang sedang berjalan saat ini.\n\nKetik /scan untuk memulai pemindaian pasar."
+        send_telegram_message(chat_id, msg)
+        return jsonify({'ok': True})
+
     # SAFETY NET CHECK — Mencegah spam scan ganda jika pemindaian sedang berjalan
     with ACTIVE_SCANS_LOCK:
         if chat_id in ACTIVE_SCANS:
             send_telegram_message(
                 chat_id,
                 "⚠️ *Pemindaian sedang berjalan di background...*\n"
-                "_Mohon tunggu hasil pemindaian sebelumnya selesai sebelum mengirim perintah scan baru._"
+                "_Mohon tunggu hasil pemindaian sebelumnya selesai atau ketik /status untuk mengecek progres._"
             )
             return jsonify({'ok': True})
 
@@ -283,8 +309,8 @@ def telegram_webhook():
         
         load_res = send_telegram_message(
             chat_id,
-            "⏳ *Sedang memindai seluruh saham pasar BEI...*\n"
-            "_Pemindaian berjalan di background. Hasil akan otomatis diperbarui di sini begitu selesai._"
+            "⏳ *Sedang memindai seluruh 960+ saham pasar BEI...*\n"
+            "_Pemindaian berjalan di background. Ketik /status kapan saja untuk mengecek progres._"
         )
         msg_id = load_res.get('result', {}).get('message_id')
 
@@ -316,7 +342,7 @@ def telegram_webhook():
     # Handle specific Tickers input (ASYNC BACKGROUND THREAD)
     tickers = parse_tickers_from_text(text)
     if not tickers:
-        send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan, /ping, /dividends, atau ketik kode saham (misal: `BBRI ASII`).')
+        send_telegram_message(chat_id, '❓ Perintah atau kode saham tidak dikenali.\n\nGunakan /scan, /status, /ping, /dividends, atau ketik kode saham (misal: `BBRI ASII`).')
         return jsonify({'ok': True})
 
     with ACTIVE_SCANS_LOCK:
